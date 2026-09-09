@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Valorant Discord Bot 사용 안내">
+  <title>[Naguling] Valorant Discord Bot</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <div class="eyebrow">[Naguling] Valorant Discord Bot v1.0.0</div>
+      <h1>전적부터 상점까지,<br/> 디스코드에서 바로.</h1>
+      <p class="lead">전적 분석, 팀 밸런싱, 스킬 기록, 다중 Riot 계정 상점 조회를 한 곳에서 제공합니다.</p>
+      <div class="actions">
+        <a class="button primary" href="#commands">명령어 보기</a>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section id="commands">
+      <h2>주요 기능</h2>
+      <div class="grid">
+        <article class="card"><h3>전적 분석</h3><p>경쟁전·일반게임 기록과 시즌별 경기 흐름을 확인합니다.</p></article>
+        <article class="card"><h3>스킬 사용 기록</h3><p>최근 경기의 Q·C·E·X 사용량과 KDA를 게임별로 확인합니다.</p></article>
+        <article class="card"><h3>팀 밸런싱</h3><p>파워 스코어를 기준으로 팀을 자동 구성합니다.</p></article>
+        <article class="card"><h3>다중 계정 상점</h3><p>여러 Riot 계정을 저장하고 기본 계정을 선택해 오늘의 상점을 확인합니다.</p></article>
+      </div>
+    </section>
+
+    <section>
+      <h2>처음 사용하기</h2>
+      <div class="steps">
+        <div class="step"><strong>/계정등록</strong><span>Riot ID 연결</span></div>
+        <div class="step"><strong>/전적</strong><span>최근 경기와 시즌 기록</span></div>
+        <div class="step"><strong>/팀짜기</strong><span>2팀 또는 3팀 구성</span></div>
+        <div class="step"><strong>/상점연동</strong><span>계정명별 QR 승인</span></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>명령어 빠른 안내</h2>
+      <div class="command-grid">
+        <details class="command command-detail">
+          <summary><code>/계정등록</code><span>Riot ID 연결</span></summary>
+          <div class="command-description">
+            <p>Riot 계정을 Discord 사용자와 연결합니다.</p>
+            <p><code>/계정등록 이름:닉네임 태그:KR 지역:kr</code></p>
+          </div>
+        </details>
+        <details class="command command-detail">
+          <summary><code>/전적</code><span>전적 조회 · 상세 옵션</span></summary>
+          <div class="command-description">
+            <p>기본 전적, 경기별 기록, 스킬 사용 기록, 다른 계정 조회를 한 곳에서 확인합니다.</p>
+            <p><code>/전적 경기별:TRUE</code> · 최근 경기 상세</p>
+            <p><code>/전적 스킬사용기록:TRUE</code> · 게임별 Q·C·E·X 사용량과 KDA</p>
+            <p><code>/전적 이름:닉네임 태그:KR 지역:kr</code> · 다른 계정 조회</p>
+            <p><code>/전적 시즌:에피소드명</code> · 선택 시즌 기록</p>
+          </div>
+        </details>
+        <details class="command command-detail">
+          <summary><code>/팀짜기</code><span>팀 밸런싱</span></summary>
+          <div class="command-description">
+            <p>등록된 Riot 계정만 수동 팀 참가가 가능합니다.</p>
+            <p><code>/팀짜기 방식:수동 팀수:2</code> · 참가 버튼으로 팀 구성</p>
+            <p><code>/팀짜기 방식:자동 팀수:3</code> · 파워 스코어 기반 자동 구성</p>
+          </div>
+        </details>
+        <details class="command command-detail">
+          <summary><code>/상점</code><span>상점 조회 · 계정 관리</span></summary>
+          <div class="command-description">
+            <p>Riot 계정별 상점 연동과 조회, 기본 계정 설정을 관리합니다.</p>
+            <p><code>/상점연동 계정명:본계정</code> · 계정별 Riot Mobile QR 승인</p>
+            <p><code>/상점 계정명:본계정</code> · 선택 계정 상점 조회</p>
+            <p><code>/상점기본계정 계정명:본계정</code> · 계정명 없는 조회의 기본 계정 설정</p>
+            <p><code>/상점계정목록</code> · 연동 계정과 실제 Riot 닉네임 확인</p>
+            <p><code>/상점계정이름변경 기존계정명:기본계정 새계정명:본계정</code> · 별칭 변경</p>
+            <p><code>/상점계정삭제 계정명:부계정</code> · 저장된 상점 세션 삭제</p>
+          </div>
+        </details>
+        <div class="command"><code>◀ / ▶</code><span>상점 카테고리 이동</span></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>필요한 Discord 권한</h2>
+      <div class="note">채널 보기, 메시지 보내기, 메시지 기록 보기, 임베드 링크, 파일 첨부가 필요합니다. <code>/팀짜기</code>를 사용하려면 공개·비공개 스레드 만들기, 스레드 관리, 스레드 멤버 관리 권한도 추가하세요.</div>
+    </section>
+
+    <section>
+      <h2>상점 이용 전 안내</h2>
+      <div class="note">상점 조회는 Riot Client QR 인증을 사용하는 비공식 기능입니다. 비밀번호를 봇에 입력하지 않지만, QR 승인으로 생성된 세션은 암호화되어 저장됩니다. 세션이 만료되면 <code>/상점연동</code>을 다시 실행해야 합니다.</div>
+    </section>
+  </main>
+
+  <footer><div class="wrap">
+    <p>Valorant Discord Bot v1.0.0</p>
+    <p>Copyright © Na_Gu (na_guling) · 문의는 개인 DM으로 부탁드립니다.</p>
+  </div></footer>
+</body>
+</html>

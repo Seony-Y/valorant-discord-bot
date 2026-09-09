@@ -1,0 +1,21 @@
+{
+  "name": "valorant-discord-bot",
+  "version": "1.0.0",
+  "description": "Discord bot for Valorant stats, rank, store lookup and balanced team matching",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "deploy": "node src/deploy-commands.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.4",
+    "axios": "^1.7.7",
+    "axios-cookiejar-support": "^5.0.3",
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.5",
+    "pm2": "^7.0.4",
+    "qrcode": "^1.5.4",
+    "tough-cookie": "^4.1.4"
+  }
+}
