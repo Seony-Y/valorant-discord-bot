@@ -57,11 +57,24 @@ function qrHeaders(sdkSid, countryCode) {
 }
 
 function parseAuthorizationUri(uri) {
-  const parameters = new URLSearchParams(new URL(uri).hash.slice(1));
+  const authorizationUrl = new URL(uri);
+  const parameters = new URLSearchParams(authorizationUrl.search);
+  for (const [key, value] of new URLSearchParams(authorizationUrl.hash.slice(1))) {
+    parameters.set(key, value);
+  }
   const accessToken = parameters.get('access_token');
   const idToken = parameters.get('id_token');
-  if (!accessToken || !idToken) throw new Error('Riot 인증 응답에 필요한 토큰이 없습니다.');
+  if (!accessToken || !idToken) {
+    const error = parameters.get('error') ?? parameters.get('error_code');
+    throw new Error(error ? `Riot 인증이 거부되었습니다 (${error}).` : 'Riot 인증 응답에 필요한 토큰이 없습니다.');
+  }
   return { accessToken, idToken };
+}
+
+function createSessionExpiredError() {
+  const error = new Error('Riot 로그인 세션이 만료되었습니다. `/상점연동`을 다시 실행해주세요.');
+  error.code = 'RIOT_SESSION_EXPIRED';
+  return error;
 }
 
 async function getSsid(jar) {
@@ -176,7 +189,7 @@ export async function checkRiotQrLogin(id) {
 }
 
 export async function restoreRiotStoreSession({ ssid, puuid, shard }) {
-  const { data, headers } = await axios.get('https://auth.riotgames.com/authorize', {
+  const { headers } = await axios.get('https://auth.riotgames.com/authorize', {
     params: {
       redirect_uri: 'https://playvalorant.com/opt_in',
       client_id: 'play-valorant-web-prod',
@@ -186,14 +199,28 @@ export async function restoreRiotStoreSession({ ssid, puuid, shard }) {
     },
     headers: { Cookie: `ssid=${ssid}`, 'User-Agent': 'RiotClient/1.0' },
     maxRedirects: 0,
-    validateStatus: (status) => status === 302 || status === 303,
+    validateStatus: (status) => status >= 200 && status < 400,
   });
   const location = headers.location;
-  if (!location) throw new Error('Riot 로그인 세션이 만료되었습니다. `/상점연동`으로 다시 QR 로그인해주세요.');
+  if (!location) throw createSessionExpiredError();
 
-  const { accessToken } = parseAuthorizationUri(location);
-  const entitlementsRes = await axios.post('https://entitlements.auth.riotgames.com/api/token/v1', {}, {
-    headers: { Authorization: `Bearer ${accessToken}` },
+  let accessToken;
+  try {
+    ({ accessToken } = parseAuthorizationUri(location));
+  } catch {
+    throw createSessionExpiredError();
+  }
+
+  const entitlementsRes = await axios.post(
+    'https://entitlements.auth.riotgames.com/api/token/v1',
+    {},
+    {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      validateStatus: (status) => status >= 200 && status < 300,
+    }
+  ).catch((error) => {
+    if ([401, 403].includes(error.response?.status)) throw createSessionExpiredError();
+    throw error;
   });
   return { accessToken, entitlementsToken: entitlementsRes.data.entitlements_token, puuid, shard };
 }
@@ -210,9 +237,7 @@ async function completeAuthorization(client, headers, authData) {
   }
 
   const callbackUri = authData.response.parameters.uri;
-  const fragment = new URLSearchParams(new URL(callbackUri).hash.slice(1));
-  const accessToken = fragment.get('access_token');
-  const idToken = fragment.get('id_token');
+  const { accessToken, idToken } = parseAuthorizationUri(callbackUri);
 
   const entitlementsRes = await client.post(
     'https://entitlements.auth.riotgames.com/api/token/v1',

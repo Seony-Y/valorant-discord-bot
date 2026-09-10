@@ -386,6 +386,12 @@ export async function execute(interaction) {
     setTimeout(() => storeViews.delete(view.id), STORE_VIEW_TIMEOUT_MS).unref();
     await interaction.editReply(buildViewPayload(view));
   } catch (err) {
+    if (err.code === 'RIOT_SESSION_EXPIRED') {
+      await interaction.editReply(
+        `Riot 로그인 세션이 만료되었습니다. **/상점연동 계정명:${accountName}** 을 다시 실행해 로그인한 후 상점을 조회해주세요.`
+      );
+      return;
+    }
     await interaction.editReply(`상점 조회에 실패했습니다: ${err.message}`);
   }
 }
