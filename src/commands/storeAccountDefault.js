@@ -52,5 +52,5 @@ export async function execute(interaction) {
   }
 
   const riotLabel = account.riot_name && account.riot_tag ? ` (${account.riot_name}#${account.riot_tag})` : '';
-  await interaction.editReply(`기본 상점 계정을 **${accountName}**${riotLabel}(으)로 설정했습니다. 이제 계정명 없이 `/상점`을 사용할 수 있습니다.`);
+  await interaction.editReply(`기본 상점 계정을 **${accountName}**${riotLabel}(으)로 설정했습니다. 이제 계정명 없이 \`/상점\`을 사용할 수 있습니다.`);
 }

@@ -19,7 +19,8 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export async function execute(interaction) {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-  const requestedAccountName = interaction.options.getString('계정명')?.trim() || '기본계정';
+  const explicitAccountName = interaction.options.getString('계정명')?.trim() || null;
+  const requestedAccountName = explicitAccountName ?? '기본계정';
 
   const { data: player } = await supabase
     .from('players')
@@ -53,9 +54,22 @@ export async function execute(interaction) {
       } catch (error) {
         console.warn(`Riot 닉네임 조회 실패: ${error.message}`);
       }
-      const accountName = requestedAccountName === '기본계정' && displayName
-        ? `${displayName.riotName}#${displayName.riotTag}`
-        : requestedAccountName;
+
+      let accountName = requestedAccountName;
+      if (!explicitAccountName) {
+        // 계정명을 지정하지 않았다면 같은 Riot 계정(puuid)의 기존 연동 기록을 갱신해 중복 저장을 막는다.
+        const { data: existing } = await supabase
+          .from('riot_store_sessions')
+          .select('account_name')
+          .eq('discord_id', interaction.user.id)
+          .eq('puuid', session.puuid)
+          .maybeSingle();
+        if (existing) {
+          accountName = existing.account_name;
+        } else if (displayName) {
+          accountName = `${displayName.riotName}#${displayName.riotTag}`;
+        }
+      }
       await saveStoreSession(interaction.user.id, accountName, { ...session, ...(displayName ?? {}) });
       const riotLabel = displayName ? ` (${displayName.riotName}#${displayName.riotTag})` : '';
       await interaction.editReply(`Riot Mobile 로그인이 완료되었습니다${riotLabel}. 이제 /상점 계정명:${accountName} 으로 오늘의 상점을 조회할 수 있습니다.`);
