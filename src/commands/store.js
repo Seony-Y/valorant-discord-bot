@@ -305,7 +305,7 @@ export const data = new SlashCommandBuilder()
   );
 
 export async function execute(interaction) {
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  await interaction.deferReply();
   const requestedAccountName = interaction.options.getString('계정명')?.trim();
   const hasExplicitAccountName = Boolean(requestedAccountName);
   let accountName = requestedAccountName || '기본계정';
