@@ -5,6 +5,7 @@ import { createStorePages, VALORANT_POINTS_IMAGE } from '../commands/store.js';
 
 const NOTIFICATION_INTERVAL_MS = 60 * 1000;
 let notificationTimer;
+let favoriteRefreshRunning = false;
 
 function getKstDateParts(date = new Date()) {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -17,6 +18,67 @@ function getKstDateParts(date = new Date()) {
     hourCycle: 'h23',
   }).formatToParts(date);
   return Object.fromEntries(parts.filter(({ type }) => type !== 'literal').map(({ type, value }) => [type, Number(value)]));
+}
+
+function getKstDate(date = new Date()) {
+  const { year, month, day } = getKstDateParts(date);
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+async function getFavoriteMatches(account, favoriteNames) {
+  const ssid = decryptCredential({ encrypted: account.encrypted_ssid, iv: account.iv, authTag: account.auth_tag });
+  const session = await restoreRiotStoreSession({ ssid, puuid: account.puuid, shard: account.shard });
+  const { favoriteMatches } = await createStorePages(session, favoriteNames);
+  return favoriteMatches;
+}
+
+export async function checkFavoritesAfterAdd(client, userId, itemNames) {
+  const { data: notifications, error: notificationError } = await supabase
+    .from('store_notifications')
+    .select('hour, minute')
+    .eq('discord_id', userId)
+    .eq('enabled', true);
+  if (notificationError) throw notificationError;
+  const scheduledTimes = [...new Set((notifications ?? []).map(({ hour, minute }) =>
+    `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`))].sort();
+
+  const { data: accounts, error: accountError } = await supabase
+    .from('riot_store_sessions')
+    .select('account_name, encrypted_ssid, iv, auth_tag, puuid, shard')
+    .eq('discord_id', userId);
+  if (accountError) throw accountError;
+  if (!accounts?.length) return { status: 'no-account' };
+
+  const matchedByAccount = [];
+  for (const account of accounts) {
+    const matches = await getFavoriteMatches(account, itemNames);
+    if (matches.length) matchedByAccount.push({ accountName: account.account_name, matches });
+  }
+
+  const { error: updateError } = await supabase
+    .from('store_favorites')
+    .update({ last_checked_on: getKstDate() })
+    .eq('discord_id', userId)
+    .in('item_name', itemNames);
+  if (updateError) throw updateError;
+  if (!matchedByAccount.length) {
+    return scheduledTimes.length
+      ? { status: 'scheduled', times: scheduledTimes }
+      : { status: 'waiting' };
+  }
+
+  const matchedNames = [...new Set(matchedByAccount.flatMap(({ matches }) => matches))];
+  const user = await client.users.fetch(userId);
+  const lines = matchedByAccount.map(({ accountName, matches }) =>
+    `**${accountName}**: ${matches.map((name) => `**${name}**`).join(', ')}`);
+  await user.send(`관심 스킨이 오늘 상점에 등장했습니다.\n${lines.join('\n')}`);
+  const { error: notifiedError } = await supabase
+    .from('store_favorites')
+    .update({ last_notified_on: getKstDate() })
+    .eq('discord_id', userId)
+    .in('item_name', matchedNames);
+  if (notifiedError) throw notifiedError;
+  return { status: 'notified', matches: matchedByAccount, times: scheduledTimes };
 }
 
 async function sendStoreNotification(client, notification) {
@@ -32,10 +94,14 @@ async function sendStoreNotification(client, notification) {
   const session = await restoreRiotStoreSession({ ssid, puuid: account.puuid, shard: account.shard });
   const { data: favorites, error: favoritesError } = await supabase
     .from('store_favorites')
-    .select('item_name')
+    .select('item_name, last_notified_on')
     .eq('discord_id', notification.discord_id);
   if (favoritesError && favoritesError.code !== '42P01') throw favoritesError;
-  const { pages, favoriteMatches } = await createStorePages(session, (favorites ?? []).map((favorite) => favorite.item_name));
+  const today = getKstDate();
+  const pendingFavoriteNames = (favorites ?? [])
+    .filter((favorite) => favorite.last_notified_on !== today)
+    .map((favorite) => favorite.item_name);
+  const { pages, favoriteMatches } = await createStorePages(session, pendingFavoriteNames);
   const user = await client.users.fetch(notification.discord_id);
   const favoriteMessage = favoriteMatches.length
     ? `\n\n관심 스킨 등장: ${favoriteMatches.map((name) => `**${name}**`).join(', ')}`
@@ -45,6 +111,14 @@ async function sendStoreNotification(client, notification) {
     embeds: pages[0]?.embeds ?? [],
     files: [new AttachmentBuilder(VALORANT_POINTS_IMAGE, { name: 'vp_img.webp' })],
   });
+  if (favoriteMatches.length) {
+    const { error: updateError } = await supabase
+      .from('store_favorites')
+      .update({ last_notified_on: today })
+      .eq('discord_id', notification.discord_id)
+      .in('item_name', favoriteMatches);
+    if (updateError) throw updateError;
+  }
 }
 
 async function processStoreNotifications(client) {
@@ -83,10 +157,91 @@ async function processStoreNotifications(client) {
   }
 }
 
+async function processFavoriteRefreshNotifications(client) {
+  const now = getKstDateParts();
+  if (now.hour < 9) return;
+  const today = getKstDate();
+  const { data: favorites, error: favoriteError } = await supabase
+    .from('store_favorites')
+    .select('discord_id, item_name')
+    .or(`last_checked_on.is.null,last_checked_on.lt.${today}`);
+  if (favoriteError) {
+    console.error(`즐겨찾기 갱신 목록 조회 실패: ${favoriteError.message}`);
+    return;
+  }
+  if (!favorites?.length) return;
+
+  const userIds = [...new Set(favorites.map((favorite) => favorite.discord_id))];
+  const [{ data: notifications, error: notificationError }, { data: accounts, error: accountError }] = await Promise.all([
+    supabase
+      .from('store_notifications')
+      .select('discord_id')
+      .in('discord_id', userIds)
+      .eq('enabled', true),
+    supabase
+      .from('riot_store_sessions')
+      .select('discord_id, account_name, encrypted_ssid, iv, auth_tag, puuid, shard')
+      .in('discord_id', userIds),
+  ]);
+  if (notificationError || accountError) {
+    console.error(`즐겨찾기 갱신 계정 조회 실패: ${(notificationError ?? accountError).message}`);
+    return;
+  }
+
+  const scheduledUserIds = new Set((notifications ?? []).map((notification) => notification.discord_id));
+  for (const userId of userIds) {
+    const userFavorites = favorites.filter((favorite) => favorite.discord_id === userId);
+    const itemNames = userFavorites.map((favorite) => favorite.item_name);
+    try {
+      if (!scheduledUserIds.has(userId)) {
+        const matchedByAccount = [];
+        for (const account of (accounts ?? []).filter((entry) => entry.discord_id === userId)) {
+          const matches = await getFavoriteMatches(account, itemNames);
+          if (matches.length) matchedByAccount.push({ accountName: account.account_name, matches });
+        }
+        if (matchedByAccount.length) {
+          const user = await client.users.fetch(userId);
+          const lines = matchedByAccount.map(({ accountName, matches }) =>
+            `**${accountName}**: ${matches.map((name) => `**${name}**`).join(', ')}`);
+          await user.send(`상점 갱신 후 관심 스킨이 등장했습니다.\n${lines.join('\n')}`);
+          const matchedNames = [...new Set(matchedByAccount.flatMap(({ matches }) => matches))];
+          const { error: notifiedError } = await supabase
+            .from('store_favorites')
+            .update({ last_notified_on: today })
+            .eq('discord_id', userId)
+            .in('item_name', matchedNames);
+          if (notifiedError) throw notifiedError;
+        }
+      }
+
+      const { error: updateError } = await supabase
+        .from('store_favorites')
+        .update({ last_checked_on: today })
+        .eq('discord_id', userId)
+        .in('item_name', itemNames);
+      if (updateError) throw updateError;
+    } catch (error) {
+      console.warn(`즐겨찾기 갱신 확인 실패 (${userId}): ${error.message}`);
+    }
+  }
+}
+
+function runFavoriteRefreshNotifications(client) {
+  if (favoriteRefreshRunning) return;
+  favoriteRefreshRunning = true;
+  processFavoriteRefreshNotifications(client)
+    .catch((error) => console.error(`즐겨찾기 갱신 처리 실패: ${error.message}`))
+    .finally(() => {
+      favoriteRefreshRunning = false;
+    });
+}
+
 export function startStoreNotificationScheduler(client) {
   if (notificationTimer) clearInterval(notificationTimer);
   processStoreNotifications(client).catch((error) => console.error(`상점 알림 처리 실패: ${error.message}`));
+  runFavoriteRefreshNotifications(client);
   notificationTimer = setInterval(() => {
     processStoreNotifications(client).catch((error) => console.error(`상점 알림 처리 실패: ${error.message}`));
+    runFavoriteRefreshNotifications(client);
   }, NOTIFICATION_INTERVAL_MS);
 }

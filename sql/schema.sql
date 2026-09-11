@@ -46,9 +46,17 @@ create table if not exists store_favorites (
   discord_id text references players(discord_id) on delete cascade,
   item_name text not null,
   image_url text,
+  last_checked_on date,
+  last_notified_on date,
   created_at timestamptz not null default now(),
   primary key (discord_id, item_name)
 );
+
+alter table store_favorites
+  add column if not exists last_checked_on date;
+
+alter table store_favorites
+  add column if not exists last_notified_on date;
 
 -- Cached stats so team matching doesn't hit the Valorant API every time.
 create table if not exists stats_cache (

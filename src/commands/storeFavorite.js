@@ -1,5 +1,6 @@
 import { MessageFlags, SlashCommandBuilder } from 'discord.js';
 import { searchWeaponSkins } from '../services/riotAuth.js';
+import { checkFavoritesAfterAdd } from '../services/storeNotifications.js';
 import { supabase } from '../services/supabase.js';
 
 export const data = new SlashCommandBuilder()
@@ -47,6 +48,22 @@ async function getFavorites(userId) {
     .select('item_name, image_url, created_at')
     .eq('discord_id', userId)
     .order('item_name');
+}
+
+function getNotificationStatus(result) {
+  if (result.status === 'scheduled') {
+    return `상점 알림이 설정되어 있어 매일 **${result.times.join(', ')}** DM에 등장 여부를 함께 알려드립니다.`;
+  }
+  if (result.status === 'notified') {
+    const scheduledMessage = result.times?.length
+      ? ` 예약 상점 알림은 매일 **${result.times.join(', ')}**에 별도로 전송됩니다.`
+      : '';
+    return `현재 상점에 등장 중인 것을 확인해 DM을 한 번 보냈습니다.${scheduledMessage}`;
+  }
+  if (result.status === 'waiting') {
+    return '오늘 상점에는 없습니다. 내일부터 매일 **09:00** 상점 갱신 후 등장 여부를 확인합니다.';
+  }
+  return '상점 계정이 없어 등장 여부를 확인하지 못했습니다. 먼저 `/상점연동`을 실행해주세요.';
 }
 
 export async function autocomplete(interaction) {
@@ -128,6 +145,8 @@ export async function execute(interaction) {
           discord_id: interaction.user.id,
           item_name: skin.name,
           image_url: skin.image,
+          last_checked_on: null,
+          last_notified_on: null,
         })),
         { onConflict: 'discord_id,item_name' }
       );
@@ -140,6 +159,15 @@ export async function execute(interaction) {
     const lines = [`즐겨찾기 ${matched.length}개를 추가했습니다.`];
     if (matched.length) lines.push(`추가됨: ${matched.map((skin) => `**${skin.name}**`).join(', ')}`);
     if (unmatched.length) lines.push(`찾지 못함: ${unmatched.map((name) => `**${name}**`).join(', ')}`);
+    if (matched.length) {
+      try {
+        const result = await checkFavoritesAfterAdd(interaction.client, interaction.user.id, matched.map((skin) => skin.name));
+        lines.push(getNotificationStatus(result));
+      } catch (notificationError) {
+        console.warn(`즐겨찾기 즉시 확인 실패 (${interaction.user.id}): ${notificationError.message}`);
+        lines.push('즐겨찾기는 저장했지만 상점 확인에 실패했습니다. 상점 연동 상태를 확인해주세요.');
+      }
+    }
     await interaction.editReply(lines.join('\n'));
     return;
   }
@@ -163,12 +191,25 @@ export async function execute(interaction) {
       discord_id: interaction.user.id,
       item_name: skin.name,
       image_url: skin.image,
+      last_checked_on: null,
+      last_notified_on: null,
     }, { onConflict: 'discord_id,item_name' });
     if (error) {
-      await interaction.editReply('즐겨찾기를 추가하지 못했습니다. 잠시 후 다시 시도해주세요.');
+      console.error(`즐겨찾기 추가 실패 (${error.code ?? 'unknown'}): ${error.message}`);
+      await interaction.editReply(error.code === 'PGRST205'
+        ? '즐겨찾기 DB가 아직 설정되지 않았습니다. 관리자에게 Supabase 스키마 적용을 요청해주세요.'
+        : '즐겨찾기를 추가하지 못했습니다. 잠시 후 다시 시도해주세요.');
       return;
     }
-    await interaction.editReply(`**${skin.name}**을(를) 상점 즐겨찾기에 추가했습니다.`);
+    let notificationStatus;
+    try {
+      const result = await checkFavoritesAfterAdd(interaction.client, interaction.user.id, [skin.name]);
+      notificationStatus = getNotificationStatus(result);
+    } catch (notificationError) {
+      console.warn(`즐겨찾기 즉시 확인 실패 (${interaction.user.id}): ${notificationError.message}`);
+      notificationStatus = '즐겨찾기는 저장했지만 상점 확인에 실패했습니다. 상점 연동 상태를 확인해주세요.';
+    }
+    await interaction.editReply(`**${skin.name}**을(를) 상점 즐겨찾기에 추가했습니다.\n${notificationStatus}`);
     return;
   }
 

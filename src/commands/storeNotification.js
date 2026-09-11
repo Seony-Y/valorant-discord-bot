@@ -125,5 +125,8 @@ export async function execute(interaction) {
     return;
   }
 
-  await interaction.editReply(`상점 알림을 설정했습니다. 매일 한국 시간 **${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}**에 **${account.account_name}** 계정의 상점을 DM으로 보내드립니다.`);
+  await interaction.editReply(
+    `상점 알림을 설정했습니다. 매일 한국 시간 **${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}**에 ` +
+    `**${account.account_name}** 계정의 상점을 DM으로 보내드립니다. 즐겨찾기 스킨이 등장하면 같은 DM에 함께 표시됩니다.`
+  );
 }
