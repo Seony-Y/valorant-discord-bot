@@ -28,8 +28,14 @@ function getKstDate(date = new Date()) {
 async function getFavoriteMatches(account, favoriteNames) {
   const ssid = decryptCredential({ encrypted: account.encrypted_ssid, iv: account.iv, authTag: account.auth_tag });
   const session = await restoreRiotStoreSession({ ssid, puuid: account.puuid, shard: account.shard });
-  const { favoriteMatches } = await createStorePages(session, favoriteNames);
-  return favoriteMatches;
+  const { favoriteMatches, favoriteEmbeds } = await createStorePages(session, favoriteNames);
+  return { favoriteMatches, favoriteEmbeds };
+}
+
+function decorateFavoriteEmbeds(accountName, embeds) {
+  return embeds.map((embed) => embed
+    .setColor(0xff4655)
+    .setDescription(`**등장 계정**\n${accountName}`));
 }
 
 export async function checkFavoritesAfterAdd(client, userId, itemNames) {
@@ -61,9 +67,13 @@ export async function checkFavoritesAfterAdd(client, userId, itemNames) {
   let checkedAccountCount = 0;
   for (const account of targetAccounts) {
     try {
-      const matches = await getFavoriteMatches(account, itemNames);
+      const { favoriteMatches: matches, favoriteEmbeds } = await getFavoriteMatches(account, itemNames);
       checkedAccountCount += 1;
-      if (matches.length) matchedByAccount.push({ accountName: account.account_name, matches });
+      if (matches.length) matchedByAccount.push({
+        accountName: account.account_name,
+        matches,
+        embeds: decorateFavoriteEmbeds(account.account_name, favoriteEmbeds),
+      });
     } catch (error) {
       if (error.code !== 'RIOT_SESSION_EXPIRED') throw error;
       expiredAccounts.push(account.account_name);
@@ -86,8 +96,12 @@ export async function checkFavoritesAfterAdd(client, userId, itemNames) {
   const matchedNames = [...new Set(matchedByAccount.flatMap(({ matches }) => matches))];
   const user = await client.users.fetch(userId);
   const lines = matchedByAccount.map(({ accountName, matches }) =>
-    `등장 계정: **${accountName}**\n관심 스킨: ${matches.map((name) => `**${name}**`).join(', ')}`);
-  await user.send(`관심 스킨이 오늘 상점에 등장했습니다.\n\n${lines.join('\n\n')}`);
+    `등장 계정: **${accountName}**\n즐겨찾기한 스킨: ${matches.map((name) => `**${name}**`).join(', ')}`);
+  await user.send({
+    content: `즐겨찾기한 스킨이 오늘 상점에 등장했습니다.\n\n${lines.join('\n\n')}`,
+    embeds: matchedByAccount.flatMap(({ embeds }) => embeds).slice(0, 10),
+    files: [new AttachmentBuilder(VALORANT_POINTS_IMAGE, { name: 'vp_img.webp' })],
+  });
   const { error: notifiedError } = await supabase
     .from('store_favorites')
     .update({ last_notified_on: getKstDate() })
@@ -120,7 +134,7 @@ async function sendStoreNotification(client, notification) {
   const { pages, favoriteMatches } = await createStorePages(session, pendingFavoriteNames);
   const user = await client.users.fetch(notification.discord_id);
   const favoriteMessage = favoriteMatches.length
-    ? `\n\n등장 계정: **${account.account_name}**\n관심 스킨: ${favoriteMatches.map((name) => `**${name}**`).join(', ')}`
+    ? `\n\n즐겨찾기한 스킨이 오늘 상점에 등장했습니다.\n등장 계정: **${account.account_name}**\n즐겨찾기한 스킨: ${favoriteMatches.map((name) => `**${name}**`).join(', ')}`
     : '';
   await user.send({
     content: `오늘의 상점 · **${account.account_name}**${account.riot_name && account.riot_tag ? ` · ${account.riot_name}#${account.riot_tag}` : ''}${favoriteMessage}`,
@@ -212,14 +226,22 @@ async function processFavoriteRefreshNotifications(client) {
       if (!scheduledUserIds.has(userId)) {
         const matchedByAccount = [];
         for (const account of (accounts ?? []).filter((entry) => entry.discord_id === userId)) {
-          const matches = await getFavoriteMatches(account, itemNames);
-          if (matches.length) matchedByAccount.push({ accountName: account.account_name, matches });
+          const { favoriteMatches: matches, favoriteEmbeds } = await getFavoriteMatches(account, itemNames);
+          if (matches.length) matchedByAccount.push({
+            accountName: account.account_name,
+            matches,
+            embeds: decorateFavoriteEmbeds(account.account_name, favoriteEmbeds),
+          });
         }
         if (matchedByAccount.length) {
           const user = await client.users.fetch(userId);
           const lines = matchedByAccount.map(({ accountName, matches }) =>
-            `등장 계정: **${accountName}**\n관심 스킨: ${matches.map((name) => `**${name}**`).join(', ')}`);
-          await user.send(`상점 갱신 후 관심 스킨이 등장했습니다.\n\n${lines.join('\n\n')}`);
+            `등장 계정: **${accountName}**\n즐겨찾기한 스킨: ${matches.map((name) => `**${name}**`).join(', ')}`);
+          await user.send({
+            content: `즐겨찾기한 스킨이 오늘 상점에 등장했습니다.\n\n${lines.join('\n\n')}`,
+            embeds: matchedByAccount.flatMap(({ embeds }) => embeds).slice(0, 10),
+            files: [new AttachmentBuilder(VALORANT_POINTS_IMAGE, { name: 'vp_img.webp' })],
+          });
           const matchedNames = [...new Set(matchedByAccount.flatMap(({ matches }) => matches))];
           const { error: notifiedError } = await supabase
             .from('store_favorites')

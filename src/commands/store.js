@@ -281,8 +281,9 @@ export async function createStorePages(session, favoriteNames = []) {
   const dailyPrices = getPriceByRewardId(dailyOffers);
   const accessoryPrices = getPriceByRewardId(accessoryOffers);
 
+  const dailyItems = offers.map((offer, index) => ({ ...offer, cost: dailyPrices.get(offerIds[index]) }));
   const [dailyPage, accessoryPage, nightMarketPage] = [
-    { embeds: makeItemEmbeds(offers.map((offer, index) => ({ ...offer, cost: dailyPrices.get(offerIds[index]) }))) },
+    { embeds: makeItemEmbeds(dailyItems) },
     { embeds: makeItemEmbeds(accessories.map((accessory, index) => ({ ...accessory, cost: accessoryPrices.get(accessoryIds[index]) }))) },
     nightMarketDetails.length
       ? { embeds: makeItemEmbeds(nightMarketOffers.map((offer, index) => ({ ...offer, ...nightMarketDetails[index] }))) }
@@ -292,6 +293,8 @@ export async function createStorePages(session, favoriteNames = []) {
   const favoriteMatches = offers
     .map((offer) => offer.name)
     .filter((name) => favoriteSet.has(name.toLocaleLowerCase('ko-KR')));
+  const favoriteEmbeds = makeItemEmbeds(dailyItems.filter((item) =>
+    favoriteSet.has(item.name.toLocaleLowerCase('ko-KR'))));
 
   const pages = [
     dailyPage,
@@ -299,7 +302,7 @@ export async function createStorePages(session, favoriteNames = []) {
     ...bundlePages,
   ];
   if (nightMarketPage) pages.push(nightMarketPage);
-  return { pages, hasNightMarket: nightMarketDetails.length > 0, favoriteMatches };
+  return { pages, hasNightMarket: nightMarketDetails.length > 0, favoriteMatches, favoriteEmbeds };
 }
 
 export const data = new SlashCommandBuilder()
