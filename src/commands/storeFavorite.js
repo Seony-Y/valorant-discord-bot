@@ -51,17 +51,23 @@ async function getFavorites(userId) {
 }
 
 function getNotificationStatus(result) {
+  if (result.status === 'session-expired') {
+    return `연동 기록은 있지만 Riot 세션이 만료되었습니다: **${result.accounts.join(', ')}**. `/상점연동`으로 다시 로그인해주세요.`;
+  }
+  const expiredMessage = result.expiredAccounts?.length
+    ? ` 세션이 만료된 계정은 다시 연동해주세요: **${result.expiredAccounts.join(', ')}**.`
+    : '';
   if (result.status === 'scheduled') {
-    return `상점 알림이 설정되어 있어 매일 **${result.times.join(', ')}** DM에 등장 여부를 함께 알려드립니다.`;
+    return `상점 알림이 설정되어 있어 매일 **${result.times.join(', ')}** DM에 등장 여부를 함께 알려드립니다.${expiredMessage}`;
   }
   if (result.status === 'notified') {
     const scheduledMessage = result.times?.length
       ? ` 예약 상점 알림은 매일 **${result.times.join(', ')}**에 별도로 전송됩니다.`
       : '';
-    return `현재 상점에 등장 중인 것을 확인해 DM을 한 번 보냈습니다.${scheduledMessage}`;
+    return `현재 상점에 등장 중인 것을 확인해 DM을 한 번 보냈습니다.${scheduledMessage}${expiredMessage}`;
   }
   if (result.status === 'waiting') {
-    return '오늘 상점에는 없습니다. 내일부터 매일 **09:00** 상점 갱신 후 등장 여부를 확인합니다.';
+    return `오늘 상점에는 없습니다. 내일부터 매일 **09:00** 상점 갱신 후 등장 여부를 확인합니다.${expiredMessage}`;
   }
   return '상점 계정이 없어 등장 여부를 확인하지 못했습니다. 먼저 `/상점연동`을 실행해주세요.';
 }

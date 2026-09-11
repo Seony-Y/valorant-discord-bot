@@ -35,7 +35,7 @@ async function getFavoriteMatches(account, favoriteNames) {
 export async function checkFavoritesAfterAdd(client, userId, itemNames) {
   const { data: notifications, error: notificationError } = await supabase
     .from('store_notifications')
-    .select('hour, minute')
+    .select('account_name, hour, minute')
     .eq('discord_id', userId)
     .eq('enabled', true);
   if (notificationError) throw notificationError;
@@ -44,16 +44,32 @@ export async function checkFavoritesAfterAdd(client, userId, itemNames) {
 
   const { data: accounts, error: accountError } = await supabase
     .from('riot_store_sessions')
-    .select('account_name, encrypted_ssid, iv, auth_tag, puuid, shard')
-    .eq('discord_id', userId);
+    .select('account_name, is_default, encrypted_ssid, iv, auth_tag, puuid, shard, updated_at')
+    .eq('discord_id', userId)
+    .order('updated_at', { ascending: false });
   if (accountError) throw accountError;
   if (!accounts?.length) return { status: 'no-account' };
 
+  const scheduledAccountNames = new Set((notifications ?? []).map((notification) => notification.account_name));
+  const targetAccounts = scheduledAccountNames.size
+    ? accounts.filter((account) => scheduledAccountNames.has(account.account_name))
+    : [accounts.find((account) => account.is_default) ?? accounts[0]];
+  if (!targetAccounts.length) return { status: 'no-account' };
+
   const matchedByAccount = [];
-  for (const account of accounts) {
-    const matches = await getFavoriteMatches(account, itemNames);
-    if (matches.length) matchedByAccount.push({ accountName: account.account_name, matches });
+  const expiredAccounts = [];
+  let checkedAccountCount = 0;
+  for (const account of targetAccounts) {
+    try {
+      const matches = await getFavoriteMatches(account, itemNames);
+      checkedAccountCount += 1;
+      if (matches.length) matchedByAccount.push({ accountName: account.account_name, matches });
+    } catch (error) {
+      if (error.code !== 'RIOT_SESSION_EXPIRED') throw error;
+      expiredAccounts.push(account.account_name);
+    }
   }
+  if (!checkedAccountCount) return { status: 'session-expired', accounts: expiredAccounts };
 
   const { error: updateError } = await supabase
     .from('store_favorites')
@@ -63,22 +79,22 @@ export async function checkFavoritesAfterAdd(client, userId, itemNames) {
   if (updateError) throw updateError;
   if (!matchedByAccount.length) {
     return scheduledTimes.length
-      ? { status: 'scheduled', times: scheduledTimes }
-      : { status: 'waiting' };
+      ? { status: 'scheduled', times: scheduledTimes, expiredAccounts }
+      : { status: 'waiting', expiredAccounts };
   }
 
   const matchedNames = [...new Set(matchedByAccount.flatMap(({ matches }) => matches))];
   const user = await client.users.fetch(userId);
   const lines = matchedByAccount.map(({ accountName, matches }) =>
-    `**${accountName}**: ${matches.map((name) => `**${name}**`).join(', ')}`);
-  await user.send(`관심 스킨이 오늘 상점에 등장했습니다.\n${lines.join('\n')}`);
+    `등장 계정: **${accountName}**\n관심 스킨: ${matches.map((name) => `**${name}**`).join(', ')}`);
+  await user.send(`관심 스킨이 오늘 상점에 등장했습니다.\n\n${lines.join('\n\n')}`);
   const { error: notifiedError } = await supabase
     .from('store_favorites')
     .update({ last_notified_on: getKstDate() })
     .eq('discord_id', userId)
     .in('item_name', matchedNames);
   if (notifiedError) throw notifiedError;
-  return { status: 'notified', matches: matchedByAccount, times: scheduledTimes };
+  return { status: 'notified', matches: matchedByAccount, times: scheduledTimes, expiredAccounts };
 }
 
 async function sendStoreNotification(client, notification) {
@@ -104,7 +120,7 @@ async function sendStoreNotification(client, notification) {
   const { pages, favoriteMatches } = await createStorePages(session, pendingFavoriteNames);
   const user = await client.users.fetch(notification.discord_id);
   const favoriteMessage = favoriteMatches.length
-    ? `\n\n관심 스킨 등장: ${favoriteMatches.map((name) => `**${name}**`).join(', ')}`
+    ? `\n\n등장 계정: **${account.account_name}**\n관심 스킨: ${favoriteMatches.map((name) => `**${name}**`).join(', ')}`
     : '';
   await user.send({
     content: `오늘의 상점 · **${account.account_name}**${account.riot_name && account.riot_tag ? ` · ${account.riot_name}#${account.riot_tag}` : ''}${favoriteMessage}`,
@@ -202,8 +218,8 @@ async function processFavoriteRefreshNotifications(client) {
         if (matchedByAccount.length) {
           const user = await client.users.fetch(userId);
           const lines = matchedByAccount.map(({ accountName, matches }) =>
-            `**${accountName}**: ${matches.map((name) => `**${name}**`).join(', ')}`);
-          await user.send(`상점 갱신 후 관심 스킨이 등장했습니다.\n${lines.join('\n')}`);
+            `등장 계정: **${accountName}**\n관심 스킨: ${matches.map((name) => `**${name}**`).join(', ')}`);
+          await user.send(`상점 갱신 후 관심 스킨이 등장했습니다.\n\n${lines.join('\n\n')}`);
           const matchedNames = [...new Set(matchedByAccount.flatMap(({ matches }) => matches))];
           const { error: notifiedError } = await supabase
             .from('store_favorites')
