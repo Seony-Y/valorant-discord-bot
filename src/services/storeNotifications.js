@@ -1,6 +1,7 @@
 import { decryptCredential, restoreRiotStoreSession } from './riotAuth.js';
 import { supabase } from './supabase.js';
-import { createStorePages } from '../commands/store.js';
+import { AttachmentBuilder } from 'discord.js';
+import { createStorePages, VALORANT_POINTS_IMAGE } from '../commands/store.js';
 
 const NOTIFICATION_INTERVAL_MS = 60 * 1000;
 let notificationTimer;
@@ -34,6 +35,7 @@ async function sendStoreNotification(client, notification) {
   await user.send({
     content: `오늘의 상점 · **${account.account_name}**${account.riot_name && account.riot_tag ? ` · ${account.riot_name}#${account.riot_tag}` : ''}`,
     embeds: pages[0]?.embeds ?? [],
+    files: [new AttachmentBuilder(VALORANT_POINTS_IMAGE, { name: 'vp_img.webp' })],
   });
 }
 

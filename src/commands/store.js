@@ -16,7 +16,7 @@ import { autocompleteStoreAccount } from '../services/storeAccounts.js';
 
 const STORE_VIEW_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const storeViews = new Map();
-const VALORANT_POINTS_IMAGE = readFileSync(new URL('../../asset/vp_img.webp', import.meta.url));
+export const VALORANT_POINTS_IMAGE = readFileSync(new URL('../../asset/vp_img.webp', import.meta.url));
 
 export async function saveStoreSession(userId, accountName, { ssid, puuid, shard, riotName, riotTag }) {
   const encryptedSsid = encryptCredential(ssid);
