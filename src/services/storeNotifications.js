@@ -57,7 +57,8 @@ async function processStoreNotifications(client) {
       await supabase
         .from('store_notifications')
         .update({ last_sent_on: today, updated_at: new Date().toISOString() })
-        .eq('discord_id', notification.discord_id);
+        .eq('discord_id', notification.discord_id)
+        .eq('account_name', notification.account_name);
     } catch (error) {
       console.warn(`상점 알림 전송 실패 (${notification.discord_id}): ${error.message}`);
       if (error.code === 'RIOT_SESSION_EXPIRED') {

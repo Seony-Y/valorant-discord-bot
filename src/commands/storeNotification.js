@@ -27,7 +27,12 @@ export const data = new SlashCommandBuilder()
       .setRequired(false)))
   .addSubcommand((subcommand) => subcommand
     .setName('해제')
-    .setDescription('상점 알림을 해제합니다.'));
+    .setDescription('상점 알림을 해제합니다.')
+    .addStringOption((option) => option
+      .setName('계정명')
+      .setDescription('특정 계정만 해제 (미지정 시 전체 해제)')
+      .setAutocomplete(true)
+      .setRequired(false)));
 
 export async function autocomplete(interaction) {
   await autocompleteStoreAccount(interaction);
@@ -38,14 +43,26 @@ export async function execute(interaction) {
   const action = interaction.options.getSubcommand();
 
   if (action === '해제') {
-    const { error } = await supabase
+    const accountName = interaction.options.getString('계정명')?.trim() ?? null;
+    let disableQuery = supabase
       .from('store_notifications')
-      .upsert({ discord_id: interaction.user.id, enabled: false }, { onConflict: 'discord_id' });
+      .update({ enabled: false, updated_at: new Date().toISOString() })
+      .eq('discord_id', interaction.user.id);
+    if (accountName) disableQuery = disableQuery.eq('account_name', accountName);
+    const { data: disabledRows, error } = await disableQuery.select('account_name');
     if (error) {
       await interaction.editReply(`상점 알림을 해제하지 못했습니다: ${error.message}`);
       return;
     }
-    await interaction.editReply('상점 알림을 해제했습니다.');
+    if (!disabledRows?.length) {
+      await interaction.editReply(accountName
+        ? `**${accountName}** 계정의 활성화된 상점 알림을 찾지 못했습니다.`
+        : '활성화된 상점 알림이 없습니다.');
+      return;
+    }
+    await interaction.editReply(accountName
+      ? `**${accountName}** 계정의 상점 알림을 해제했습니다.`
+      : `상점 알림 ${disabledRows.length}개를 모두 해제했습니다.`);
     return;
   }
 
@@ -76,7 +93,7 @@ export async function execute(interaction) {
       enabled: true,
       last_sent_on: null,
       updated_at: new Date().toISOString(),
-    }, { onConflict: 'discord_id' });
+    }, { onConflict: 'discord_id,account_name' });
   if (error) {
     await interaction.editReply(`상점 알림을 설정하지 못했습니다: ${error.message}`);
     return;

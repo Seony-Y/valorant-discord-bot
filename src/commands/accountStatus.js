@@ -9,10 +9,10 @@ export const data = new SlashCommandBuilder()
 export async function execute(interaction) {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-  const [{ data: player, error: playerError }, { data: accounts, error: accountError }, { data: notification, error: notificationError }] = await Promise.all([
-    supabase.from('players').select('riot_name, riot_tag, region, updated_at').eq('discord_id', interaction.user.id).maybeSingle(),
+  const [{ data: player, error: playerError }, { data: accounts, error: accountError }, { data: notifications, error: notificationError }] = await Promise.all([
+    supabase.from('players').select('riot_name, riot_tag, region').eq('discord_id', interaction.user.id).maybeSingle(),
     supabase.from('riot_store_sessions').select('account_name, is_default, riot_name, riot_tag, encrypted_ssid, iv, auth_tag, puuid, shard').eq('discord_id', interaction.user.id).order('updated_at', { ascending: false }),
-    supabase.from('store_notifications').select('enabled, hour, minute, account_name').eq('discord_id', interaction.user.id).maybeSingle(),
+    supabase.from('store_notifications').select('enabled, hour, minute, account_name').eq('discord_id', interaction.user.id).order('account_name'),
   ]);
 
   if (playerError || accountError) {
@@ -41,9 +41,11 @@ export async function execute(interaction) {
 
   if (notificationError && notificationError.code !== '42P01') {
     lines.push(`상점 알림: 조회 실패 (${notificationError.message})`);
-  } else if (notification?.enabled) {
-    const accountLabel = notification.account_name ?? '기본 계정';
-    lines.push(`상점 알림: 활성화 · 매일 ${String(notification.hour).padStart(2, '0')}:${String(notification.minute).padStart(2, '0')} · ${accountLabel}`);
+  } else if (notifications?.some((notification) => notification.enabled)) {
+    const notificationLines = notifications
+      .filter((notification) => notification.enabled)
+      .map((notification) => `- ${notification.account_name} · 매일 ${String(notification.hour).padStart(2, '0')}:${String(notification.minute).padStart(2, '0')}`);
+    lines.push(`상점 알림:\n${notificationLines.join('\n')}`);
   } else {
     lines.push('상점 알림: 비활성화');
   }
