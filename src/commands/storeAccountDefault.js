@@ -1,5 +1,6 @@
 import { MessageFlags, SlashCommandBuilder } from 'discord.js';
 import { supabase } from '../services/supabase.js';
+import { autocompleteStoreAccount } from '../services/storeAccounts.js';
 
 export const data = new SlashCommandBuilder()
   .setName('상점기본계정')
@@ -10,7 +11,12 @@ export const data = new SlashCommandBuilder()
       .setDescription('기본으로 사용할 연동 계정명')
       .setRequired(true)
       .setMaxLength(64)
+        .setAutocomplete(true)
   );
+
+export async function autocomplete(interaction) {
+  await autocompleteStoreAccount(interaction);
+}
 
 export async function execute(interaction) {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });

@@ -89,8 +89,9 @@ function automaticLobbyEmbed(owner, accounts, teamCount) {
 }
 
 function resultEmbed(teams, teamScores) {
+  const averageScore = teamScores.reduce((sum, score) => sum + score, 0) / teamScores.length;
   const playerLabel = (player) =>
-    player.id ? `<@${player.id}>  ${player.name}` : `${player.name}#${player.tag}`;
+    `${player.id ? `<@${player.id}>` : `${player.name}#${player.tag}`} · ${player.currentTier ?? '티어 정보 없음'} · ${Number(player.powerScore ?? 0).toFixed(1)}점`;
   const labels = ['A', 'B', 'C'];
 
   return new EmbedBuilder()
@@ -98,13 +99,13 @@ function resultEmbed(teams, teamScores) {
     .setDescription('최근 전적의 파워 스코어 합계가 가장 비슷하도록 나눴습니다.')
     .addFields(
       ...teams.map((team, index) => ({
-        name: `팀 ${labels[index]} · ${teamScores[index].toFixed(1)}`,
+        name: `팀 ${labels[index]} · 합계 ${teamScores[index].toFixed(1)} · 평균 ${(teamScores[index] / team.length).toFixed(1)}`,
         value: team.map(playerLabel).join('\n') || '-',
         inline: true,
       }))
     )
     .setColor(0x57f287)
-    .setFooter({ text: '파워 스코어 기반 팀 밸런싱' });
+    .setFooter({ text: `팀 평균 ${averageScore.toFixed(1)} · 최고/최저 차이 ${(Math.max(...teamScores) - Math.min(...teamScores)).toFixed(1)} · 파워 스코어 기반` });
 }
 
 async function createTeamThread(interaction, mode) {

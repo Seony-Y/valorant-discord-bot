@@ -51,7 +51,17 @@ export async function getOrRefreshPowerScore(discordUser) {
 
   const cacheUpdatedAt = cache ? new Date(cache.updated_at).getTime() : 0;
   const isFresh = cache && cacheUpdatedAt >= SCORE_VERSION_UPDATED_AT && Date.now() - cacheUpdatedAt < 30 * 60 * 1000;
-  if (isFresh) return { id: discordUser.id, name: player.riot_name, powerScore: cache.power_score };
+  if (isFresh) {
+    return {
+      id: discordUser.id,
+      name: player.riot_name,
+      powerScore: cache.power_score,
+      currentTier: cache.current_tier,
+      peakTier: cache.peak_tier,
+      kda: cache.kda,
+      acs: cache.acs,
+    };
+  }
 
   let mmr;
   let matchSummary;
@@ -61,7 +71,17 @@ export async function getOrRefreshPowerScore(discordUser) {
       getLatestAvailableMatchSummary(player.region, player.riot_name, player.riot_tag),
     ]);
   } catch (error) {
-    if (cache) return { id: discordUser.id, name: player.riot_name, powerScore: cache.power_score };
+    if (cache) {
+      return {
+        id: discordUser.id,
+        name: player.riot_name,
+        powerScore: cache.power_score,
+        currentTier: cache.current_tier,
+        peakTier: cache.peak_tier,
+        kda: cache.kda,
+        acs: cache.acs,
+      };
+    }
     throw error;
   }
   const powerScore = computePowerScore({
@@ -82,7 +102,15 @@ export async function getOrRefreshPowerScore(discordUser) {
     updated_at: new Date().toISOString(),
   });
 
-  return { id: discordUser.id, name: player.riot_name, powerScore };
+  return {
+    id: discordUser.id,
+    name: player.riot_name,
+    powerScore,
+    currentTier: mmr.currentTier,
+    peakTier: mmr.peakTier,
+    kda: matchSummary.kda,
+    acs: matchSummary.acs,
+  };
 }
 
 export async function getPowerScoreForRiotAccount(name, tag, region) {
@@ -97,5 +125,14 @@ export async function getPowerScoreForRiotAccount(name, tag, region) {
     peakTier: mmr.peakTier,
   });
 
-  return { name, tag, region, powerScore };
+  return {
+    name,
+    tag,
+    region,
+    powerScore,
+    currentTier: mmr.currentTier,
+    peakTier: mmr.peakTier,
+    kda: matchSummary.kda,
+    acs: matchSummary.acs,
+  };
 }

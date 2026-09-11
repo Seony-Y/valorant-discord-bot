@@ -12,7 +12,7 @@
     <div class="wrap">
       <div class="eyebrow">[Naguling] Valorant Discord Bot v1.0.0</div>
       <h1>전적부터 상점까지,<br/> 디스코드에서 바로.</h1>
-      <p class="lead">전적 분석, 팀 밸런싱, 스킬 기록, 다중 Riot 계정 상점 조회를 한 곳에서 제공합니다.</p>
+      <p class="lead">전적 분석, 상세 팀 밸런싱, 계정 상태 확인, 다중 Riot 계정 상점과 알림을 한 곳에서 제공합니다.</p>
       <div class="actions">
         <a class="button primary" href="#commands">명령어 보기</a>
       </div>
@@ -27,6 +27,8 @@
         <article class="card"><h3>스킬 사용 기록</h3><p>최근 경기의 Q·C·E·X 사용량과 KDA를 게임별로 확인합니다.</p></article>
         <article class="card"><h3>팀 밸런싱</h3><p>파워 스코어를 기준으로 팀을 자동 구성합니다.</p></article>
         <article class="card"><h3>다중 계정 상점</h3><p>여러 Riot 계정을 저장하고 기본 계정을 선택해 오늘의 상점을 확인합니다.</p></article>
+        <article class="card"><h3>팀 결과 상세화</h3><p>플레이어별 티어·점수와 팀별 합계·평균·점수 차이를 표시합니다.</p></article>
+        <article class="card"><h3>계정 상태와 알림</h3><p>내 계정과 쿠키 상태를 확인하고 매일 상점 DM 알림을 설정합니다.</p></article>
       </div>
     </section>
 
@@ -37,6 +39,7 @@
         <div class="step"><strong>/전적</strong><span>최근 경기와 시즌 기록</span></div>
         <div class="step"><strong>/팀짜기</strong><span>2팀 또는 3팀 구성</span></div>
         <div class="step"><strong>/상점연동</strong><span>계정명별 QR 승인</span></div>
+        <div class="step"><strong>/내정보</strong><span>연동 상태 확인</span></div>
       </div>
     </section>
 
@@ -66,6 +69,13 @@
             <p>등록된 Riot 계정만 수동 팀 참가가 가능합니다.</p>
             <p><code>/팀짜기 방식:수동 팀수:2</code> · 참가 버튼으로 팀 구성</p>
             <p><code>/팀짜기 방식:자동 팀수:3</code> · 파워 스코어 기반 자동 구성</p>
+            <p>결과에 개인 티어·점수, 팀별 합계·평균·점수 차이를 표시합니다.</p>
+          </div>
+        </details>
+        <details class="command command-detail">
+          <summary><code>/내정보</code><span>계정 상태 확인</span></summary>
+          <div class="command-description">
+            <p>등록된 Riot 계정, 상점 계정, 쿠키 상태, 기본 계정과 알림 설정을 한 번에 확인합니다.</p>
           </div>
         </details>
         <details class="command command-detail">
@@ -76,8 +86,11 @@
             <p><code>/상점 계정명:본계정</code> · 선택 계정 상점 조회</p>
             <p><code>/상점기본계정 계정명:본계정</code> · 계정명 없는 조회의 기본 계정 설정</p>
             <p><code>/상점계정목록</code> · 연동 계정과 실제 Riot 닉네임 확인</p>
+            <p><code>/상점계정정리</code> · 쿠키가 만료된 세션만 정리</p>
             <p><code>/상점계정이름변경 기존계정명:기본계정 새계정명:본계정</code> · 별칭 변경</p>
             <p><code>/상점계정삭제 계정명:부계정</code> · 저장된 상점 세션 삭제</p>
+            <p><code>/상점알림 설정 시:9 분:0</code> · 매일 지정 시간에 상점 DM 알림</p>
+            <p><code>/상점알림 해제</code> · 상점 알림 중지</p>
           </div>
         </details>
         <div class="command"><code>◀ / ▶</code><span>상점 카테고리 이동</span></div>

@@ -1,6 +1,7 @@
 import { MessageFlags, SlashCommandBuilder } from 'discord.js';
 import { decryptCredential, getRiotDisplayName, restoreRiotStoreSession } from '../services/riotAuth.js';
 import { supabase } from '../services/supabase.js';
+import { getStoreAccountStatus } from '../services/storeAccounts.js';
 
 export const data = new SlashCommandBuilder()
   .setName('상점계정목록')
@@ -26,7 +27,8 @@ export async function execute(interaction) {
   }
 
   const resolvedAccounts = await Promise.all(accounts.map(async (account) => {
-    if (account.riot_name && account.riot_tag) return account;
+    const status = await getStoreAccountStatus(account);
+    if (status !== '정상' || (account.riot_name && account.riot_tag)) return { ...account, status };
 
     try {
       const ssid = decryptCredential({ encrypted: account.encrypted_ssid, iv: account.iv, authTag: account.auth_tag });
@@ -41,10 +43,10 @@ export async function execute(interaction) {
         .update({ account_name: accountName, riot_name: displayName.riotName, riot_tag: displayName.riotTag })
         .eq('discord_id', interaction.user.id)
         .eq('account_name', account.account_name);
-      return { ...account, ...displayName, account_name: updateError ? account.account_name : accountName };
+      return { ...account, ...displayName, status, account_name: updateError ? account.account_name : accountName };
     } catch (error) {
       console.warn(`상점 계정 닉네임 조회 실패 (${account.account_name}): ${error.message}`);
-      return account;
+      return { ...account, status };
     }
   }));
 
@@ -57,9 +59,9 @@ export async function execute(interaction) {
       }).format(new Date(account.updated_at));
       const riotLabel = account.riot_name && account.riot_tag ? ` · ${account.riot_name}#${account.riot_tag}` : '';
       const defaultLabel = account.is_default ? ' · 기본' : '';
-      return `${index + 1}. **${account.account_name}**${riotLabel}${defaultLabel} · 최근 연동 ${updatedAt}`;
+      return `${index + 1}. **${account.account_name}**${riotLabel}${defaultLabel} · 상태: ${account.status} · 최근 연동 ${updatedAt}`;
     })
     .join('\n');
 
-  await interaction.editReply(`연동된 상점 계정\n${lines}\n\n조회: /상점 계정명:계정명`);
+  await interaction.editReply(`연동된 상점 계정\n${lines}\n\n조회: /상점 계정명:계정명\n재로그인: /상점연동 계정명:계정명\n정리: /상점계정정리`);
 }

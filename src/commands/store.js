@@ -12,6 +12,7 @@ import {
   resolveStoreItems,
 } from '../services/riotAuth.js';
 import { supabase } from '../services/supabase.js';
+import { autocompleteStoreAccount } from '../services/storeAccounts.js';
 
 const STORE_VIEW_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const storeViews = new Map();
@@ -301,8 +302,12 @@ export const data = new SlashCommandBuilder()
   .setName('상점')
   .setDescription('오늘의 상점 내역을 조회합니다 (/상점연동 필요).')
   .addStringOption((opt) =>
-    opt.setName('계정명').setDescription('조회할 연동 계정명 (미지정 시 실제 Riot 닉네임)').setRequired(false)
+    opt.setName('계정명').setDescription('조회할 연동 계정명 (미지정 시 실제 Riot 닉네임)').setRequired(false).setAutocomplete(true)
   );
+
+export async function autocomplete(interaction) {
+  await autocompleteStoreAccount(interaction);
+}
 
 export async function execute(interaction) {
   await interaction.deferReply();
