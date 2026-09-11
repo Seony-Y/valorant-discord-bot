@@ -219,7 +219,7 @@ function buildViewPayload(view) {
   };
 }
 
-export async function createStorePages(session) {
+export async function createStorePages(session, favoriteNames = []) {
   const storefront = await getStorefront(session);
   const offerIds = storefront.SkinsPanelLayout.SingleItemOffers;
   const dailyOffers = storefront.SkinsPanelLayout.SingleItemStoreOffers ?? [];
@@ -288,6 +288,10 @@ export async function createStorePages(session) {
       ? { embeds: makeItemEmbeds(nightMarketOffers.map((offer, index) => ({ ...offer, ...nightMarketDetails[index] }))) }
       : null,
   ];
+  const favoriteSet = new Set(favoriteNames.map((name) => name.toLocaleLowerCase('ko-KR')));
+  const favoriteMatches = offers
+    .map((offer) => offer.name)
+    .filter((name) => favoriteSet.has(name.toLocaleLowerCase('ko-KR')));
 
   const pages = [
     dailyPage,
@@ -295,7 +299,7 @@ export async function createStorePages(session) {
     ...bundlePages,
   ];
   if (nightMarketPage) pages.push(nightMarketPage);
-  return { pages, hasNightMarket: nightMarketDetails.length > 0 };
+  return { pages, hasNightMarket: nightMarketDetails.length > 0, favoriteMatches };
 }
 
 export const data = new SlashCommandBuilder()

@@ -30,10 +30,18 @@ async function sendStoreNotification(client, notification) {
 
   const ssid = decryptCredential({ encrypted: account.encrypted_ssid, iv: account.iv, authTag: account.auth_tag });
   const session = await restoreRiotStoreSession({ ssid, puuid: account.puuid, shard: account.shard });
-  const { pages } = await createStorePages(session);
+  const { data: favorites, error: favoritesError } = await supabase
+    .from('store_favorites')
+    .select('item_name')
+    .eq('discord_id', notification.discord_id);
+  if (favoritesError && favoritesError.code !== '42P01') throw favoritesError;
+  const { pages, favoriteMatches } = await createStorePages(session, (favorites ?? []).map((favorite) => favorite.item_name));
   const user = await client.users.fetch(notification.discord_id);
+  const favoriteMessage = favoriteMatches.length
+    ? `\n\n관심 스킨 등장: ${favoriteMatches.map((name) => `**${name}**`).join(', ')}`
+    : '';
   await user.send({
-    content: `오늘의 상점 · **${account.account_name}**${account.riot_name && account.riot_tag ? ` · ${account.riot_name}#${account.riot_tag}` : ''}`,
+    content: `오늘의 상점 · **${account.account_name}**${account.riot_name && account.riot_tag ? ` · ${account.riot_name}#${account.riot_tag}` : ''}${favoriteMessage}`,
     embeds: pages[0]?.embeds ?? [],
     files: [new AttachmentBuilder(VALORANT_POINTS_IMAGE, { name: 'vp_img.webp' })],
   });

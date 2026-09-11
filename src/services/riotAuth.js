@@ -339,6 +339,15 @@ export async function resolveSkinOffers(offerIds) {
   });
 }
 
+export async function searchWeaponSkins(query = '') {
+  const { data } = await axios.get('https://valorant-api.com/v1/weapons/skins?language=ko-KR');
+  const normalizedQuery = query.trim().toLocaleLowerCase('ko-KR');
+  return data.data
+    .filter((skin) => skin.displayName?.toLocaleLowerCase('ko-KR').includes(normalizedQuery))
+    .slice(0, 25)
+    .map((skin) => ({ name: skin.displayName, image: skin.displayIcon ?? null }));
+}
+
 export async function resolveStoreItems(itemIds) {
   const endpoints = [
     'weapons/skins',
