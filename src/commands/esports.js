@@ -1,11 +1,13 @@
 import {
   ActionRowBuilder,
+  AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
   EmbedBuilder,
   MessageFlags,
   SlashCommandBuilder,
 } from 'discord.js';
+import sharp from 'sharp';
 import {
   fetchOfficialStageDisplay,
   fetchTierOneEvents,
@@ -106,6 +108,33 @@ function secureImageUrl(value) {
   return value?.replace(/^http:/, 'https:') ?? null;
 }
 
+async function createMatchupLogo(teams, attachmentName) {
+  const imageUrls = teams.slice(0, 2).map((team) => secureImageUrl(team.image));
+  if (imageUrls.some((url) => !url)) return null;
+  try {
+    const logos = await Promise.all(imageUrls.map(async (url) => {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`팀 로고 응답 오류: ${response.status}`);
+      return sharp(Buffer.from(await response.arrayBuffer()))
+        .resize(56, 56, { fit: 'contain' })
+        .png()
+        .toBuffer();
+    }));
+    const versus = Buffer.from('<svg width="24" height="64"><text x="12" y="38" text-anchor="middle" fill="#b9bbbe" font-family="Arial" font-size="14" font-weight="700">VS</text></svg>');
+    const image = await sharp({
+      create: { width: 152, height: 64, channels: 4, background: { r: 35, g: 37, b: 41, alpha: 1 } },
+    }).composite([
+      { input: logos[0], left: 4, top: 4 },
+      { input: versus, left: 64, top: 0 },
+      { input: logos[1], left: 92, top: 4 },
+    ]).png().toBuffer();
+    return new AttachmentBuilder(image, { name: attachmentName });
+  } catch (error) {
+    console.warn(`대회 팀 로고 생성 실패: ${error.message}`);
+    return null;
+  }
+}
+
 function gameRecordLines(event) {
   return (event?.match?.games ?? [])
     .filter((game) => game.state !== 'unneeded')
@@ -118,10 +147,10 @@ function gameRecordLines(event) {
     });
 }
 
-function matchCard(teams, details, options = {}) {
+async function matchCard(teams, details, options = {}) {
   const [first, second] = teams;
   if (!first || !second) {
-    return new EmbedBuilder().setDescription('대진이 아직 확정되지 않았습니다.').setColor(0x3ba7ff);
+    return { embed: new EmbedBuilder().setDescription('대진이 아직 확정되지 않았습니다.').setColor(0x3ba7ff) };
   }
   const winner = teams.find((team) => team.outcome === 'win');
   const loser = teams.find((team) => team.outcome === 'loss');
@@ -137,7 +166,7 @@ function matchCard(teams, details, options = {}) {
     const bestOf = options.bestOfCount ?? winnerScore * 2 - 1;
     const games = gameRecordLines(options.event);
     embed
-      .setAuthor({ name: `${winnerName} 승리`, iconURL: secureImageUrl(winner.image) ?? undefined })
+      .setAuthor({ name: `${winnerName} 승리` })
       .setTitle(`${winnerName} ${winnerScore} : ${loserScore} ${loserName}`)
       .setDescription([
         `**${winnerName} 승리 · 최종 스코어 ${winnerScore}:${loserScore}**`,
@@ -145,18 +174,18 @@ function matchCard(teams, details, options = {}) {
         ...details,
         ...(games.length ? ['', '**세트별 기록**', ...games] : []),
       ].filter((line) => line !== null && line !== undefined).join('\n'));
-    const loserImage = secureImageUrl(loser.image);
-    embed.setFooter({ text: loserName, iconURL: loserImage ?? undefined });
-    return embed;
+    const attachment = await createMatchupLogo(teams, options.attachmentName);
+    if (attachment) embed.setThumbnail(`attachment://${attachment.name}`);
+    return { embed, attachment };
   }
 
   embed
-    .setAuthor({ name: translateEventState(details.state), iconURL: secureImageUrl(first.image) ?? undefined })
+    .setAuthor({ name: translateEventState(details.state) })
     .setTitle(`${firstName} vs ${secondName}`)
     .setDescription(details.lines.filter(Boolean).join('\n'));
-  const secondImage = secureImageUrl(second.image);
-  embed.setFooter({ text: secondName, iconURL: secondImage ?? undefined });
-  return embed;
+  const attachment = await createMatchupLogo(teams, options.attachmentName);
+  if (attachment) embed.setThumbnail(`attachment://${attachment.name}`);
+  return { embed, attachment };
 }
 
 function eventCard(event, mode) {
@@ -172,8 +201,8 @@ function eventCard(event, mode) {
     `${event.league?.name ?? '공식 리그'} · ${event.tournament?.name ?? '공식 대회'}`,
   ];
   return mode === '결과'
-    ? matchCard(teams, lines, { event, bestOfCount: event.match?.strategy?.count })
-    : matchCard(teams, { state: event.state, lines });
+    ? matchCard(teams, lines, { event, bestOfCount: event.match?.strategy?.count, attachmentName: `match-${event.id}.png` })
+    : matchCard(teams, { state: event.state, lines }, { attachmentName: `match-${event.id}.png` });
 }
 
 function matchNumber(match) {
@@ -215,19 +244,19 @@ async function showMatchPages(interaction, matches, createEmbed, emptyMessage) {
 
   let page = 0;
   const pageCount = Math.ceil(matches.length / MATCHES_PER_PAGE);
-  const render = (disabled = false) => {
+  const render = async (disabled = false) => {
     const pageMatches = matches.slice(page * MATCHES_PER_PAGE, (page + 1) * MATCHES_PER_PAGE);
-    const embeds = pageMatches.map(createEmbed);
+    const cards = await Promise.all(pageMatches.map(createEmbed));
+    const embeds = cards.map((card) => card.embed);
+    const files = cards.map((card) => card.attachment).filter(Boolean);
     const lastEmbed = embeds.at(-1);
-    const existingFooter = lastEmbed.data.footer;
     lastEmbed.setFooter({
-      text: [existingFooter?.text, `한국 공식 · ${page + 1}/${pageCount} 페이지`].filter(Boolean).join(' · '),
-      iconURL: existingFooter?.icon_url,
+      text: `VALORANT Esports 한국 공식 · ${page + 1}/${pageCount} 페이지`,
     });
-    return { embeds, components: [paginationControls(interaction.id, page, pageCount, disabled)] };
+    return { embeds, files, attachments: [], components: [paginationControls(interaction.id, page, pageCount, disabled)] };
   };
 
-  await interaction.editReply(render());
+  await interaction.editReply(await render());
   if (pageCount === 1) return;
   const reply = await interaction.fetchReply();
   const collector = reply.createMessageComponentCollector({ time: PAGINATION_TIMEOUT_MS });
@@ -237,9 +266,9 @@ async function showMatchPages(interaction, matches, createEmbed, emptyMessage) {
       return;
     }
     page += buttonInteraction.customId.startsWith('esports-next:') ? 1 : -1;
-    await buttonInteraction.update(render());
+    await buttonInteraction.update(await render());
   });
-  collector.on('end', async () => interaction.editReply(render(true)).catch(() => {}));
+  collector.on('end', async () => interaction.editReply(await render(true)).catch(() => {}));
 }
 
 async function showEvents(interaction, mode) {
@@ -324,7 +353,7 @@ async function showStandings(interaction) {
         return matchCard(
           match.teams,
           [startTime ? formatKoreanDateTime(startTime) : null, `${display.title} · ${display.stage.name}`],
-          { event, bestOfCount: event?.match?.strategy?.count }
+          { event, bestOfCount: event?.match?.strategy?.count, attachmentName: `match-${match.id}.png` }
         );
       },
       '공식 페이지에서 브래킷 결과를 찾지 못했습니다.'
