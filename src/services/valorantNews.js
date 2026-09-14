@@ -1,7 +1,6 @@
 import axios from 'axios';
 
 const NEWS_PAGES = [
-  { url: 'https://playvalorant.com/en-us/news/', locale: 'en-us' },
   { url: 'https://playvalorant.com/ko-kr/news/', locale: 'ko-kr' },
 ];
 const INCLUDED_CATEGORIES = new Set(['announcements', 'game-updates']);
@@ -17,7 +16,6 @@ function extractNewsItems(html, locale) {
 
   return grid.items
     .filter((item) => INCLUDED_CATEGORIES.has(item.category?.machineName))
-    .filter((item) => locale === 'ko-kr' || item.category?.machineName === 'game-updates')
     .map((item) => ({
       id: item.analytics?.contentId?.split('.')[0] ?? item.action?.payload?.url,
       title: item.title,

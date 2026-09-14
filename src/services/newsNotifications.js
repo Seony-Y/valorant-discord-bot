@@ -100,6 +100,15 @@ export async function configureNewsNotification(guild, selectedChannel, hour, mi
   await destinationChannel.send(
     `발로란트 공식 소식 알림이 설정되었습니다. 매일 한국 시간 **${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}** 이후 새 소식을 전송합니다.`
   );
+  if (!existing) {
+    const now = getKstDateParts();
+    const today = `${now.year}-${String(now.month).padStart(2, '0')}-${String(now.day).padStart(2, '0')}`;
+    const articles = await fetchOfficialValorantNews();
+    await sendPendingNews(guild.client, {
+      guild_id: guild.id,
+      channel_id: destinationChannel.id,
+    }, articles, today);
+  }
   return destinationChannel;
 }
 
