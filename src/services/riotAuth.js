@@ -319,6 +319,14 @@ export async function getStorefront({ accessToken, entitlementsToken, puuid, sha
   return data;
 }
 
+const LUXE_KNIFE_UUID = '4af88517-4949-9caa-9dda-1980f07202a4';
+
+function resolveSkinImage(skin, itemId = null) {
+  if (skin?.uuid !== LUXE_KNIFE_UUID) return skin?.displayIcon ?? null;
+  const level = skin.levels?.find((entry) => entry.uuid === itemId) ?? skin.levels?.[0];
+  return level?.displayIcon ?? skin.displayIcon ?? null;
+}
+
 /** Map skin panel offer UUIDs to display metadata via valorant-api.com. */
 export async function resolveSkinOffers(offerIds) {
   const [skinsResponse, tiersResponse] = await Promise.all([
@@ -332,7 +340,7 @@ export async function resolveSkinOffers(offerIds) {
     const tier = tiers.find((entry) => entry.uuid === skin?.contentTierUuid);
     return {
       name: skin?.displayName ?? id,
-      image: skin?.displayIcon ?? null,
+      image: resolveSkinImage(skin, id),
       tierImage: tier?.displayIcon ?? null,
       tierColor: tier?.highlightColor ?? null,
     };
@@ -345,7 +353,7 @@ export async function searchWeaponSkins(query = '') {
   return data.data
     .filter((skin) => skin.displayName?.toLocaleLowerCase('ko-KR').includes(normalizedQuery))
     .slice(0, 25)
-    .map((skin) => ({ name: skin.displayName, image: skin.displayIcon ?? null }));
+    .map((skin) => ({ name: skin.displayName, image: resolveSkinImage(skin) }));
 }
 
 export async function resolveStoreItems(itemIds) {
@@ -370,7 +378,7 @@ export async function resolveStoreItems(itemIds) {
     const tier = tiers.find((entry) => entry.uuid === item?.contentTierUuid);
     return {
       name: item?.displayName ?? id,
-      image: item?.displayIcon ?? item?.fullIcon ?? item?.largeArt ?? item?.wideArt ?? null,
+      image: resolveSkinImage(item, id) ?? item?.fullIcon ?? item?.largeArt ?? item?.wideArt ?? null,
       tierImage: tier?.displayIcon ?? null,
       tierName: tier?.displayName ?? '콘텐츠 티어',
     };
