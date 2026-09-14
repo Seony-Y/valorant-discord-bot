@@ -4,6 +4,8 @@ import { load } from 'cheerio';
 const GRAPHQL_URL = 'https://valorantesports.com/api/gql';
 const SITE_URL = 'https://valorantesports.com';
 const HOME_EVENTS_HASH = '7246add6f577cf30b304e651bf9e25fc6a41fe49aeafb0754c16b5778060fc0a';
+const SEASON_NAVIGATION_HASH = '648eb6b8cb2f354748640315e16aadd1afacf78e47ca5507c1160cfa44d5d42f';
+const SEASON_IDS = new Map([[2026, '115571062868511862']]);
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const TIER_ONE_LEAGUES = new Set(['vct_americas', 'vct_emea', 'vct_pacific', 'vct_cn', 'valorant_masters', 'valorant_champions']);
 const cache = new Map();
@@ -98,6 +100,37 @@ export async function fetchTierOneEvents(year = new Date().getFullYear(), league
 }
 
 export async function getTournamentChoices(year = new Date().getFullYear()) {
+  const seasonId = SEASON_IDS.get(year);
+  if (seasonId) {
+    const cacheKey = `tournaments:${year}`;
+    const cached = getCached(cacheKey);
+    if (cached) return cached;
+    const variables = { hl: 'ko-KR', seasonId };
+    const extensions = {
+      clientLibrary: { name: '@apollo/client', version: '4.1.2' },
+      persistedQuery: { version: 1, sha256Hash: SEASON_NAVIGATION_HASH },
+    };
+    const { data } = await client.get(GRAPHQL_URL, {
+      params: {
+        operationName: 'GetSeasonForNavigation',
+        variables: JSON.stringify(variables),
+        extensions: JSON.stringify(extensions),
+      },
+    });
+    if (data.errors?.length) throw new Error(data.errors[0].message);
+    const tournaments = (data.data?.seasons?.[0]?.splits ?? [])
+      .flatMap((split) => split.tournaments ?? [])
+      .map((tournament) => ({
+        id: tournament.id,
+        name: tournament.name,
+        leagueName: tournament.league?.name ?? '공식 대회',
+        startTime: tournament.startTime,
+        endTime: tournament.endTime,
+      }))
+      .sort((left, right) => new Date(right.startTime) - new Date(left.startTime));
+    return setCached(cacheKey, tournaments);
+  }
+
   const events = await fetchTierOneEvents(year);
   const tournaments = new Map();
   for (const event of events) {
@@ -110,6 +143,15 @@ export async function getTournamentChoices(year = new Date().getFullYear()) {
     });
   }
   return [...tournaments.values()].sort((left, right) => new Date(right.startTime) - new Date(left.startTime));
+}
+
+export async function getLatestTournamentChoice(year = new Date().getFullYear(), now = new Date()) {
+  const tournaments = await getTournamentChoices(year);
+  return tournaments
+    .filter((tournament) => new Date(tournament.startTime) <= now)
+    .sort((left, right) =>
+      new Date(right.endTime ?? right.startTime) - new Date(left.endTime ?? left.startTime)
+    )[0] ?? null;
 }
 
 export async function fetchTournamentStages(tournamentId) {

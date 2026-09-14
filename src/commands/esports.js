@@ -13,6 +13,7 @@ import {
   formatKoreanDateTime,
   getBestOfLabel,
   getEventTeams,
+  getLatestTournamentChoice,
   getTournamentChoices,
   translateEventState,
 } from '../services/valorantEsports.js';
@@ -145,7 +146,7 @@ function matchCard(teams, details, options = {}) {
         ...(games.length ? ['', '**세트별 기록**', ...games] : []),
       ].filter((line) => line !== null && line !== undefined).join('\n'));
     const loserImage = secureImageUrl(loser.image);
-    if (loserImage) embed.setThumbnail(loserImage);
+    embed.setFooter({ text: loserName, iconURL: loserImage ?? undefined });
     return embed;
   }
 
@@ -154,7 +155,7 @@ function matchCard(teams, details, options = {}) {
     .setTitle(`${firstName} vs ${secondName}`)
     .setDescription(details.lines.filter(Boolean).join('\n'));
   const secondImage = secureImageUrl(second.image);
-  if (secondImage) embed.setThumbnail(secondImage);
+  embed.setFooter({ text: secondName, iconURL: secondImage ?? undefined });
   return embed;
 }
 
@@ -201,7 +202,12 @@ async function showMatchPages(interaction, matches, createEmbed, emptyMessage) {
   const render = (disabled = false) => {
     const pageMatches = matches.slice(page * MATCHES_PER_PAGE, (page + 1) * MATCHES_PER_PAGE);
     const embeds = pageMatches.map(createEmbed);
-    embeds.at(-1).setFooter({ text: `VALORANT Esports 한국 공식 데이터 · ${page + 1}/${pageCount} 페이지` });
+    const lastEmbed = embeds.at(-1);
+    const existingFooter = lastEmbed.data.footer;
+    lastEmbed.setFooter({
+      text: [existingFooter?.text, `한국 공식 · ${page + 1}/${pageCount} 페이지`].filter(Boolean).join(' · '),
+      iconURL: existingFooter?.icon_url,
+    });
     return { embeds, components: [paginationControls(interaction.id, page, pageCount, disabled)] };
   };
 
@@ -259,17 +265,25 @@ function buildStandingsEmbed(display) {
 async function showStandings(interaction) {
   let tournamentId = interaction.options.getString('대회');
   if (!tournamentId) {
-    const tournaments = await getTournamentChoices();
-    tournamentId = tournaments[0]?.id;
+    tournamentId = (await getLatestTournamentChoice())?.id;
   }
   if (!tournamentId) throw new Error('조회 가능한 공식 대회가 없습니다.');
 
   const stages = await fetchTournamentStages(tournamentId);
   const requestedStageId = interaction.options.getString('단계');
-  const stage = stages.find((item) => item.id === requestedStageId)
-    ?? stages.find((item) => item.type === '그룹')
-    ?? stages[0];
-  const display = await fetchOfficialStageDisplay(tournamentId, stage.id);
+  let display;
+  if (requestedStageId) {
+    display = await fetchOfficialStageDisplay(tournamentId, requestedStageId);
+  } else {
+    for (const stage of [...stages].reverse()) {
+      const candidate = await fetchOfficialStageDisplay(tournamentId, stage.id);
+      if (candidate.groups.length || candidate.matches.length) {
+        display = candidate;
+        break;
+      }
+    }
+  }
+  if (!display) throw new Error('선택한 대회의 공식 순위 데이터를 찾지 못했습니다.');
   if (display.matches.length) {
     const events = await fetchTierOneEvents();
     const eventsById = new Map(events.map((event) => [event.id, event]));
