@@ -1,13 +1,11 @@
 import {
   ActionRowBuilder,
-  AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
   EmbedBuilder,
   MessageFlags,
   SlashCommandBuilder,
 } from 'discord.js';
-import sharp from 'sharp';
 import {
   fetchOfficialStageDisplay,
   fetchTierOneEvents,
@@ -109,38 +107,6 @@ function secureImageUrl(value) {
   return value?.replace(/^http:/, 'https:') ?? null;
 }
 
-async function createMatchupLogo(teams, attachmentName) {
-  const imageUrls = teams.slice(0, 2).map((team) => secureImageUrl(team.image));
-  if (imageUrls.some((url) => !url)) return null;
-  try {
-    const logos = await Promise.all(imageUrls.map(async (url) => {
-      const response = await fetch(url);
-      if (!response.ok) throw new Error(`팀 로고 응답 오류: ${response.status}`);
-      return sharp(Buffer.from(await response.arrayBuffer()))
-        .resize(56, 56, { fit: 'contain' })
-        .png()
-        .toBuffer();
-    }));
-    const versus = Buffer.from(
-      '<svg width="32" height="64" viewBox="0 0 32 64" xmlns="http://www.w3.org/2000/svg">' +
-      '<path fill="#b9bbbe" d="M1 21h5l4 17 4-17h5l-7 24H8L1 21Z"/>' +
-      '<path fill="#b9bbbe" d="M20 21h11v5h-7v5h7v14H20v-5h7v-5h-7V21Z"/>' +
-      '</svg>'
-    );
-    const image = await sharp({
-      create: { width: 160, height: 64, channels: 4, background: { r: 35, g: 37, b: 41, alpha: 1 } },
-    }).composite([
-      { input: logos[0], left: 4, top: 4 },
-      { input: versus, left: 64, top: 0 },
-      { input: logos[1], left: 100, top: 4 },
-    ]).png().toBuffer();
-    return new AttachmentBuilder(image, { name: attachmentName });
-  } catch (error) {
-    console.warn(`대회 팀 로고 생성 실패: ${error.message}`);
-    return null;
-  }
-}
-
 function gameRecordLines(event) {
   return (event?.match?.games ?? [])
     .filter((game) => game.state !== 'unneeded')
@@ -153,10 +119,10 @@ function gameRecordLines(event) {
     });
 }
 
-async function matchCard(teams, details, options = {}) {
+function matchCard(teams, details, options = {}) {
   const [first, second] = teams;
   if (!first || !second) {
-    return { embed: new EmbedBuilder().setDescription('대진이 아직 확정되지 않았습니다.').setColor(0x3ba7ff) };
+    return new EmbedBuilder().setDescription('대진이 아직 확정되지 않았습니다.').setColor(0x3ba7ff);
   }
   const winner = teams.find((team) => team.outcome === 'win');
   const loser = teams.find((team) => team.outcome === 'loss');
@@ -172,7 +138,7 @@ async function matchCard(teams, details, options = {}) {
     const bestOf = options.bestOfCount ?? winnerScore * 2 - 1;
     const games = gameRecordLines(options.event);
     embed
-      .setAuthor({ name: `${winnerName} 승리` })
+      .setAuthor({ name: `${winnerName} 승리`, iconURL: secureImageUrl(winner.image) ?? undefined })
       .setTitle(`${winnerName} ${winnerScore} : ${loserScore} ${loserName}`)
       .setDescription([
         `**${winnerName} 승리 · 최종 스코어 ${winnerScore}:${loserScore}**`,
@@ -180,18 +146,14 @@ async function matchCard(teams, details, options = {}) {
         ...details,
         ...(games.length ? ['', '**세트별 기록**', ...games] : []),
       ].filter((line) => line !== null && line !== undefined).join('\n'));
-    const attachment = await createMatchupLogo(teams, options.attachmentName);
-    if (attachment) embed.setThumbnail(`attachment://${attachment.name}`);
-    return { embed, attachment };
+    return embed;
   }
 
   embed
     .setAuthor({ name: translateEventState(details.state) })
     .setTitle(`${firstName} vs ${secondName}`)
     .setDescription(details.lines.filter(Boolean).join('\n'));
-  const attachment = await createMatchupLogo(teams, options.attachmentName);
-  if (attachment) embed.setThumbnail(`attachment://${attachment.name}`);
-  return { embed, attachment };
+  return embed;
 }
 
 function eventCard(event, mode) {
@@ -207,8 +169,8 @@ function eventCard(event, mode) {
     `${event.league?.name ?? '공식 리그'} · ${event.tournament?.name ?? '공식 대회'}`,
   ];
   return mode === '결과'
-    ? matchCard(teams, lines, { event, bestOfCount: event.match?.strategy?.count, attachmentName: `match-${event.id}.png` })
-    : matchCard(teams, { state: event.state, lines }, { attachmentName: `match-${event.id}.png` });
+    ? matchCard(teams, lines, { event, bestOfCount: event.match?.strategy?.count })
+    : matchCard(teams, { state: event.state, lines });
 }
 
 function matchNumber(match) {
@@ -250,19 +212,17 @@ async function showMatchPages(interaction, matches, createEmbed, emptyMessage) {
 
   let page = 0;
   const pageCount = Math.ceil(matches.length / MATCHES_PER_PAGE);
-  const render = async (disabled = false) => {
+  const render = (disabled = false) => {
     const pageMatches = matches.slice(page * MATCHES_PER_PAGE, (page + 1) * MATCHES_PER_PAGE);
-    const cards = await Promise.all(pageMatches.map(createEmbed));
-    const embeds = cards.map((card) => card.embed);
-    const files = cards.map((card) => card.attachment).filter(Boolean);
+    const embeds = pageMatches.map(createEmbed);
     const lastEmbed = embeds.at(-1);
     lastEmbed.setFooter({
       text: `VALORANT Esports 한국 공식 · ${page + 1}/${pageCount} 페이지`,
     });
-    return { embeds, files, attachments: [], components: [paginationControls(interaction.id, page, pageCount, disabled)] };
+    return { embeds, components: [paginationControls(interaction.id, page, pageCount, disabled)] };
   };
 
-  await interaction.editReply(await render());
+  await interaction.editReply(render());
   if (pageCount === 1) return;
   const reply = await interaction.fetchReply();
   const collector = reply.createMessageComponentCollector({ time: PAGINATION_TIMEOUT_MS });
@@ -272,9 +232,9 @@ async function showMatchPages(interaction, matches, createEmbed, emptyMessage) {
       return;
     }
     page += buttonInteraction.customId.startsWith('esports-next:') ? 1 : -1;
-    await buttonInteraction.update(await render());
+    await buttonInteraction.update(render());
   });
-  collector.on('end', async () => interaction.editReply(await render(true)).catch(() => {}));
+  collector.on('end', async () => interaction.editReply(render(true)).catch(() => {}));
 }
 
 async function showEvents(interaction, mode) {
