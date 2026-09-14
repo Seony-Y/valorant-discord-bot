@@ -121,13 +121,18 @@ async function createMatchupLogo(teams, attachmentName) {
         .png()
         .toBuffer();
     }));
-    const versus = Buffer.from('<svg width="24" height="64"><text x="12" y="38" text-anchor="middle" fill="#b9bbbe" font-family="Arial" font-size="14" font-weight="700">VS</text></svg>');
+    const versus = Buffer.from(
+      '<svg width="32" height="64" viewBox="0 0 32 64" xmlns="http://www.w3.org/2000/svg">' +
+      '<path fill="#b9bbbe" d="M1 21h5l4 17 4-17h5l-7 24H8L1 21Z"/>' +
+      '<path fill="#b9bbbe" d="M20 21h11v5h-7v5h7v14H20v-5h7v-5h-7V21Z"/>' +
+      '</svg>'
+    );
     const image = await sharp({
-      create: { width: 152, height: 64, channels: 4, background: { r: 35, g: 37, b: 41, alpha: 1 } },
+      create: { width: 160, height: 64, channels: 4, background: { r: 35, g: 37, b: 41, alpha: 1 } },
     }).composite([
       { input: logos[0], left: 4, top: 4 },
       { input: versus, left: 64, top: 0 },
-      { input: logos[1], left: 92, top: 4 },
+      { input: logos[1], left: 100, top: 4 },
     ]).png().toBuffer();
     return new AttachmentBuilder(image, { name: attachmentName });
   } catch (error) {
