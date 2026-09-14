@@ -1,4 +1,11 @@
-import { EmbedBuilder, SlashCommandBuilder } from 'discord.js';
+import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  EmbedBuilder,
+  MessageFlags,
+  SlashCommandBuilder,
+} from 'discord.js';
 import {
   fetchOfficialStageDisplay,
   fetchTierOneEvents,
@@ -17,6 +24,8 @@ const LEAGUE_CHOICES = [
   { name: 'VCT EMEA', value: 'vct_emea' },
   { name: 'VCT 차이나', value: 'vct_china' },
 ];
+const MATCHES_PER_PAGE = 5;
+const PAGINATION_TIMEOUT_MS = 15 * 60 * 1000;
 
 function addCommonEventOptions(subcommand) {
   return subcommand
@@ -92,32 +101,123 @@ export async function autocomplete(interaction) {
   }
 }
 
-function formatTeams(event, includeScore) {
-  const teams = getEventTeams(event);
-  if (teams.length < 2) return '대진 미정';
-  return teams.map((team) => {
-    const score = includeScore && Number.isInteger(team.result?.gameWins) ? ` ${team.result.gameWins}` : '';
-    return `${(team.name ?? team.code ?? '팀 미정').trim()}${score}`;
-  }).join(includeScore ? ' : ' : ' vs ');
+function secureImageUrl(value) {
+  return value?.replace(/^http:/, 'https:') ?? null;
 }
 
-function buildEventsEmbed(events, mode, year, leagueName) {
-  const visible = mode === '일정'
-    ? events.filter((event) => event.state !== 'completed').slice(0, 10)
-    : events.filter((event) => event.state === 'completed').slice(-10).reverse();
-  const description = visible.length
-    ? visible.map((event) => [
-      `**${formatKoreanDateTime(event.startTime)} · ${translateEventState(event.state)}**`,
-      `${formatTeams(event, mode === '결과')} · ${getBestOfLabel(event)}`,
-      `${event.league?.name ?? '공식 리그'} · ${event.tournament?.name ?? '공식 대회'}`,
-    ].join('\n')).join('\n\n')
-    : `조회 조건에 맞는 ${mode === '일정' ? '예정 경기' : '종료 경기'}가 없습니다.`;
+function gameRecordLines(event) {
+  return (event?.match?.games ?? [])
+    .filter((game) => game.state !== 'unneeded')
+    .map((game) => {
+      const vodPath = game.vods?.[0]?.parameter
+        ? `/ko-KR/vod/${event.id}/${game.number}/${game.vods[0].parameter}`
+        : null;
+      const vod = vodPath ? ` · [다시보기](https://valorantesports.com${vodPath})` : '';
+      return `${game.number}세트 · ${translateEventState(game.state)}${vod}`;
+    });
+}
 
-  return new EmbedBuilder()
-    .setTitle(`${year} ${leagueName} ${mode}`)
-    .setDescription(description)
-    .setColor(mode === '일정' ? 0x3ba7ff : 0xff4655)
-    .setFooter({ text: 'VALORANT Esports 한국 공식 데이터 · 한국 시간 기준' });
+function matchCard(teams, details, options = {}) {
+  const [first, second] = teams;
+  if (!first || !second) {
+    return new EmbedBuilder().setDescription('대진이 아직 확정되지 않았습니다.').setColor(0x3ba7ff);
+  }
+  const winner = teams.find((team) => team.outcome === 'win');
+  const loser = teams.find((team) => team.outcome === 'loss');
+  const firstName = (first.name ?? first.code ?? '팀 미정').trim();
+  const secondName = (second.name ?? second.code ?? '팀 미정').trim();
+  const embed = new EmbedBuilder().setColor(winner ? 0x57f287 : 0x3ba7ff);
+
+  if (winner && loser) {
+    const winnerName = (winner.name ?? winner.code ?? '승리 팀').trim();
+    const loserName = (loser.name ?? loser.code ?? '상대 팀').trim();
+    const winnerScore = winner.score ?? winner.result?.gameWins ?? 0;
+    const loserScore = loser.score ?? loser.result?.gameWins ?? 0;
+    const bestOf = options.bestOfCount ?? winnerScore * 2 - 1;
+    const games = gameRecordLines(options.event);
+    embed
+      .setAuthor({ name: `${winnerName} 승리`, iconURL: secureImageUrl(winner.image) ?? undefined })
+      .setTitle(`${winnerName} ${winnerScore} : ${loserScore} ${loserName}`)
+      .setDescription([
+        `**${winnerName} 승리 · 최종 스코어 ${winnerScore}:${loserScore}**`,
+        `${bestOf}전 ${Math.ceil(bestOf / 2)}선승제`,
+        ...details,
+        ...(games.length ? ['', '**세트별 기록**', ...games] : []),
+      ].filter((line) => line !== null && line !== undefined).join('\n'));
+    const loserImage = secureImageUrl(loser.image);
+    if (loserImage) embed.setThumbnail(loserImage);
+    return embed;
+  }
+
+  embed
+    .setAuthor({ name: translateEventState(details.state), iconURL: secureImageUrl(first.image) ?? undefined })
+    .setTitle(`${firstName} vs ${secondName}`)
+    .setDescription(details.lines.filter(Boolean).join('\n'));
+  const secondImage = secureImageUrl(second.image);
+  if (secondImage) embed.setThumbnail(secondImage);
+  return embed;
+}
+
+function eventCard(event, mode) {
+  const teams = getEventTeams(event).map((team) => ({
+    ...team,
+    name: (team.name ?? team.code ?? '팀 미정').trim(),
+    score: team.result?.gameWins,
+    outcome: team.result?.outcome,
+  }));
+  const lines = [
+    `${formatKoreanDateTime(event.startTime)} · ${translateEventState(event.state)}`,
+    mode === '일정' ? getBestOfLabel(event) : null,
+    `${event.league?.name ?? '공식 리그'} · ${event.tournament?.name ?? '공식 대회'}`,
+  ];
+  return mode === '결과'
+    ? matchCard(teams, lines, { event, bestOfCount: event.match?.strategy?.count })
+    : matchCard(teams, { state: event.state, lines });
+}
+
+function paginationControls(interactionId, page, pageCount, disabled = false) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`esports-prev:${interactionId}`)
+      .setLabel('이전')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(disabled || page === 0),
+    new ButtonBuilder()
+      .setCustomId(`esports-next:${interactionId}`)
+      .setLabel('다음')
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(disabled || page === pageCount - 1)
+  );
+}
+
+async function showMatchPages(interaction, matches, createEmbed, emptyMessage) {
+  if (!matches.length) {
+    await interaction.editReply({ embeds: [new EmbedBuilder().setDescription(emptyMessage).setColor(0x3ba7ff)] });
+    return;
+  }
+
+  let page = 0;
+  const pageCount = Math.ceil(matches.length / MATCHES_PER_PAGE);
+  const render = (disabled = false) => {
+    const pageMatches = matches.slice(page * MATCHES_PER_PAGE, (page + 1) * MATCHES_PER_PAGE);
+    const embeds = pageMatches.map(createEmbed);
+    embeds.at(-1).setFooter({ text: `VALORANT Esports 한국 공식 데이터 · ${page + 1}/${pageCount} 페이지` });
+    return { embeds, components: [paginationControls(interaction.id, page, pageCount, disabled)] };
+  };
+
+  await interaction.editReply(render());
+  if (pageCount === 1) return;
+  const reply = await interaction.fetchReply();
+  const collector = reply.createMessageComponentCollector({ time: PAGINATION_TIMEOUT_MS });
+  collector.on('collect', async (buttonInteraction) => {
+    if (buttonInteraction.user.id !== interaction.user.id) {
+      await buttonInteraction.reply({ content: '이 대회 조회를 실행한 사용자만 페이지를 이동할 수 있습니다.', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    page += buttonInteraction.customId.startsWith('esports-next:') ? 1 : -1;
+    await buttonInteraction.update(render());
+  });
+  collector.on('end', async () => interaction.editReply(render(true)).catch(() => {}));
 }
 
 async function showEvents(interaction, mode) {
@@ -125,7 +225,15 @@ async function showEvents(interaction, mode) {
   const leagueSlug = interaction.options.getString('리그') ?? 'all';
   const leagueName = LEAGUE_CHOICES.find((choice) => choice.value === leagueSlug)?.name ?? '전체';
   const events = await fetchTierOneEvents(year, leagueSlug === 'all' ? undefined : leagueSlug);
-  await interaction.editReply({ embeds: [buildEventsEmbed(events, mode, year, leagueName)] });
+  const visible = mode === '일정'
+    ? events.filter((event) => event.state !== 'completed')
+    : events.filter((event) => event.state === 'completed').reverse();
+  await showMatchPages(
+    interaction,
+    visible,
+    (event) => eventCard(event, mode),
+    `${year} ${leagueName}에서 조회 가능한 ${mode === '일정' ? '예정 경기' : '종료 경기'}가 없습니다.`
+  );
 }
 
 function buildStandingsEmbed(display) {
@@ -141,14 +249,6 @@ function buildStandingsEmbed(display) {
       value: group.rows.map((row) => `**${row.rank}위** ${row.team} · ${row.record}`).join('\n'),
       inline: display.groups.length > 1,
     })));
-    return embed;
-  }
-
-  if (display.matches.length) {
-    embed.setDescription(display.matches.map((match) => {
-      const [first, second] = match.teams;
-      return `${first.name} **${first.score} : ${second.score}** ${second.name}`;
-    }).join('\n'));
     return embed;
   }
 
@@ -170,6 +270,25 @@ async function showStandings(interaction) {
     ?? stages.find((item) => item.type === '그룹')
     ?? stages[0];
   const display = await fetchOfficialStageDisplay(tournamentId, stage.id);
+  if (display.matches.length) {
+    const events = await fetchTierOneEvents();
+    const eventsById = new Map(events.map((event) => [event.id, event]));
+    await showMatchPages(
+      interaction,
+      display.matches,
+      (match) => {
+        const event = eventsById.get(match.id);
+        const startTime = event?.startTime ?? match.startTime;
+        return matchCard(
+          match.teams,
+          [startTime ? formatKoreanDateTime(startTime) : null, `${display.title} · ${display.stage.name}`],
+          { event, bestOfCount: event?.match?.strategy?.count }
+        );
+      },
+      '공식 페이지에서 브래킷 결과를 찾지 못했습니다.'
+    );
+    return;
+  }
   await interaction.editReply({ embeds: [buildStandingsEmbed(display)] });
 }
 

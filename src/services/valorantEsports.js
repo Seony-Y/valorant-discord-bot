@@ -157,6 +157,7 @@ function parseGroups($) {
     const seen = new Set();
     group.find('[aria-label]').each((__, teamElement) => {
       const team = $(teamElement).attr('aria-label')?.trim();
+      const image = $(teamElement).find('img').first().attr('src') ?? null;
       const row = findRankingRow($, teamElement);
       const rank = row?.children().first().text().trim();
       const record = row?.find('*').filter((___, element) =>
@@ -165,7 +166,7 @@ function parseGroups($) {
       const key = `${rank}:${team}:${record}`;
       if (team && rank && record && !seen.has(key)) {
         seen.add(key);
-        rows.push({ rank: Number(rank), team, record });
+        rows.push({ rank: Number(rank), team, image, record });
       }
     });
     if (rows.length) groups.push({ name: groupName || `그룹 ${groups.length + 1}`, rows });
@@ -185,6 +186,7 @@ function parseBracket($) {
       const numbers = team.text().match(/\d+/g) ?? [];
       return {
         name: team.attr('aria-label')?.trim() ?? '팀 미정',
+        image: team.find('img').first().attr('src') ?? null,
         score: Number(numbers.at(-1) ?? 0),
         outcome: team.attr('data-outcome'),
       };
@@ -254,6 +256,7 @@ function parseFlightBracket($, stageId) {
           startTime: match.startTime,
           teams: match.matchTeams.map((team) => ({
             name: team.name?.trim() ?? team.code ?? '팀 미정',
+            image: team.image ?? null,
             score: team.result?.gameWins ?? 0,
             outcome: team.result?.outcome,
           })),
