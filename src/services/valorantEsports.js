@@ -7,7 +7,14 @@ const HOME_EVENTS_HASH = '7246add6f577cf30b304e651bf9e25fc6a41fe49aeafb0754c16b5
 const SEASON_NAVIGATION_HASH = '648eb6b8cb2f354748640315e16aadd1afacf78e47ca5507c1160cfa44d5d42f';
 const SEASON_IDS = new Map([[2026, '115571062868511862']]);
 const CACHE_TTL_MS = 5 * 60 * 1000;
-const TIER_ONE_LEAGUES = new Set(['vct_americas', 'vct_emea', 'vct_pacific', 'vct_cn', 'valorant_masters', 'valorant_champions']);
+const OFFICIAL_LEAGUE_IDS = new Map([
+  ['vct_pacific', '109974804058058602'],
+  ['vct_americas', '109974795266458277'],
+  ['vct_emea', '106109559530232966'],
+  ['vct_china', '111691194187846945'],
+  ['valorant_masters', '109940824119741550'],
+  ['valorant_champions', '107254585505459304'],
+]);
 const cache = new Map();
 
 const client = axios.create({
@@ -40,7 +47,7 @@ function koreanYearRange(year) {
 
 function isTierOneLeague(league) {
   const slug = league?.slug?.toLowerCase();
-  if (TIER_ONE_LEAGUES.has(slug)) return true;
+  if (OFFICIAL_LEAGUE_IDS.has(slug)) return true;
   return /VCT|마스터스|챔피언스/i.test(league?.name ?? '');
 }
 
@@ -74,11 +81,15 @@ export async function fetchTierOneEvents(year = new Date().getFullYear(), league
     clientLibrary: { name: '@apollo/client', version: '4.1.2' },
     persistedQuery: { version: 1, sha256Hash: HOME_EVENTS_HASH },
   };
+  const leagueIds = leagueSlug
+    ? [OFFICIAL_LEAGUE_IDS.get(leagueSlug)].filter(Boolean)
+    : [...OFFICIAL_LEAGUE_IDS.values()];
   const responses = await Promise.all(['completed', 'unstarted', 'inProgress'].map(async (eventState) => {
     const variables = {
       hl: 'ko-KR',
       sport: 'val',
       ...koreanYearRange(year),
+      leagues: leagueIds,
       eventState: [eventState],
       eventType: 'all',
       vodType: ['recap'],
