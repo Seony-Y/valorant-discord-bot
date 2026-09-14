@@ -37,7 +37,7 @@ function makeArticleEmbed(article) {
     .setTitle(article.title.slice(0, 256))
     .setURL(article.url)
     .setTimestamp(new Date(article.publishedAt))
-    .setFooter({ text: article.locale === 'ko-kr' ? 'VALORANT 한국 공식' : 'VALORANT 글로벌 공식 · 한국어판 없음' });
+    .setFooter({ text: 'VALORANT 한국 공식' });
   if (article.description) embed.setDescription(article.description.slice(0, 4096));
   if (article.image) embed.setImage(article.image);
   return embed;
