@@ -4,6 +4,7 @@ import { readdirSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 import { getValorantActs } from './services/henrik.js';
+import { startNewsNotificationScheduler } from './services/newsNotifications.js';
 import { startStoreNotificationScheduler } from './services/storeNotifications.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -23,6 +24,7 @@ for (const file of commandFiles) {
 
 client.once('clientReady', () => {
   console.log(`로그인 완료: ${client.user.tag}`);
+  startNewsNotificationScheduler(client);
   startStoreNotificationScheduler(client);
 });
 
