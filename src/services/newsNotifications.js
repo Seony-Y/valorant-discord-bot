@@ -5,7 +5,7 @@ import { fetchOfficialValorantNews } from './valorantNews.js';
 const CHECK_INTERVAL_MS = 60 * 1000;
 const NEWS_LOOKBACK_MS = 14 * 24 * 60 * 60 * 1000;
 const MAX_ARTICLES_PER_DELIVERY = 5;
-const THREAD_NAME = '발로란트 공식 소식';
+const NEWS_CHANNEL_NAME = '발로란트-공식-소식';
 let notificationTimer;
 let notificationRunning = false;
 
@@ -43,40 +43,30 @@ function makeArticleEmbed(article) {
   return embed;
 }
 
-async function createNewsThread(channel) {
-  if (channel.type !== ChannelType.GuildText || !channel.threads) {
-    throw new Error('일반 텍스트 채널만 소식 알림 채널로 설정할 수 있습니다.');
-  }
-  return channel.threads.create({
-    name: THREAD_NAME,
-    type: ChannelType.PublicThread,
-    autoArchiveDuration: 1440,
-    reason: '발로란트 공식 소식 알림',
+async function createNewsChannel(guild, referenceChannel) {
+  return guild.channels.create({
+    name: NEWS_CHANNEL_NAME,
+    type: ChannelType.GuildText,
+    parent: referenceChannel.parentId,
+    permissionOverwrites: referenceChannel.permissionOverwrites.cache.map((overwrite) => ({
+      id: overwrite.id,
+      type: overwrite.type,
+      allow: overwrite.allow,
+      deny: overwrite.deny,
+    })),
+    reason: '발로란트 공식 소식 전용 채널',
   });
 }
 
-async function ensureNewsThread(guild, subscription) {
-  let thread = subscription.thread_id
-    ? await guild.channels.fetch(subscription.thread_id).catch(() => null)
-    : null;
-  if (thread?.isThread()) {
-    if (thread.locked) await thread.setLocked(false, '발로란트 공식 소식 알림 재개');
-    if (thread.archived) await thread.setArchived(false, '발로란트 공식 소식 알림 전송');
-    return thread;
+async function getNewsChannel(guild, channelId) {
+  const channel = await guild.channels.fetch(channelId).catch(() => null);
+  if (channel?.type !== ChannelType.GuildText) {
+    throw new Error('설정된 소식 채널을 찾을 수 없습니다. `/소식알림 설정`을 다시 실행해주세요.');
   }
-
-  const channel = await guild.channels.fetch(subscription.channel_id);
-  thread = await createNewsThread(channel);
-  const { error } = await supabase
-    .from('valorant_news_subscriptions')
-    .update({ thread_id: thread.id, updated_at: new Date().toISOString() })
-    .eq('guild_id', guild.id);
-  if (error) throw error;
-  return thread;
+  return channel;
 }
 
-export async function configureNewsNotification(guild, channel, hour, minute) {
-  const articles = await fetchOfficialValorantNews();
+export async function configureNewsNotification(guild, selectedChannel, hour, minute, channelMode) {
   const { data: existing, error: existingError } = await supabase
     .from('valorant_news_subscriptions')
     .select('channel_id, thread_id')
@@ -84,19 +74,22 @@ export async function configureNewsNotification(guild, channel, hour, minute) {
     .maybeSingle();
   if (existingError) throw existingError;
 
-  let thread = existing?.channel_id === channel.id && existing.thread_id
-    ? await guild.channels.fetch(existing.thread_id).catch(() => null)
-    : null;
-  if (!thread?.isThread()) thread = await createNewsThread(channel);
-  if (thread.locked) await thread.setLocked(false, '발로란트 공식 소식 알림 설정');
-  if (thread.archived) await thread.setArchived(false, '발로란트 공식 소식 알림 설정');
+  let destinationChannel = selectedChannel;
+  if (channelMode === 'dedicated') {
+    const existingChannel = existing?.channel_id
+      ? await guild.channels.fetch(existing.channel_id).catch(() => null)
+      : null;
+    destinationChannel = existingChannel?.type === ChannelType.GuildText && existingChannel.name === NEWS_CHANNEL_NAME
+      ? existingChannel
+      : await createNewsChannel(guild, selectedChannel);
+  }
 
   const { error: subscriptionError } = await supabase
     .from('valorant_news_subscriptions')
     .upsert({
       guild_id: guild.id,
-      channel_id: channel.id,
-      thread_id: thread.id,
+      channel_id: destinationChannel.id,
+      thread_id: null,
       enabled: true,
       hour,
       minute,
@@ -104,14 +97,10 @@ export async function configureNewsNotification(guild, channel, hour, minute) {
       updated_at: new Date().toISOString(),
     }, { onConflict: 'guild_id' });
   if (subscriptionError) throw subscriptionError;
-
-  if (articles.length) {
-    const { error: deliveryError } = await supabase
-      .from('valorant_news_deliveries')
-      .upsert(articles.map((article) => ({ guild_id: guild.id, article_id: article.id })), { onConflict: 'guild_id,article_id' });
-    if (deliveryError) throw deliveryError;
-  }
-  return thread;
+  await destinationChannel.send(
+    `발로란트 공식 소식 알림이 설정되었습니다. 매일 한국 시간 **${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}** 이후 새 소식을 전송합니다.`
+  );
+  return destinationChannel;
 }
 
 export async function disableNewsNotification(guild) {
@@ -119,13 +108,9 @@ export async function disableNewsNotification(guild) {
     .from('valorant_news_subscriptions')
     .update({ enabled: false, updated_at: new Date().toISOString() })
     .eq('guild_id', guild.id)
-    .select('thread_id')
+    .select('channel_id')
     .maybeSingle();
   if (error) throw error;
-  if (subscription?.thread_id) {
-    const thread = await guild.channels.fetch(subscription.thread_id).catch(() => null);
-    if (thread?.isThread() && !thread.archived) await thread.setArchived(true, '발로란트 공식 소식 알림 해제');
-  }
   return Boolean(subscription);
 }
 
@@ -143,8 +128,8 @@ async function sendPendingNews(client, subscription, articles, today) {
     .filter((article) => new Date(article.publishedAt).getTime() >= cutoff && !sentIds.has(article.id))
     .slice(0, MAX_ARTICLES_PER_DELIVERY);
   if (pending.length) {
-    const thread = await ensureNewsThread(guild, subscription);
-    await thread.send({
+    const channel = await getNewsChannel(guild, subscription.channel_id);
+    await channel.send({
       content: `**${today} 발로란트 공식 소식**`,
       embeds: pending.map(makeArticleEmbed),
     });
@@ -159,6 +144,22 @@ async function sendPendingNews(client, subscription, articles, today) {
     .update({ last_sent_on: today, updated_at: new Date().toISOString() })
     .eq('guild_id', subscription.guild_id);
   if (updateError) throw updateError;
+  return pending.length;
+}
+
+export async function sendNewsNotificationNow(client, guildId) {
+  const { data: subscription, error } = await supabase
+    .from('valorant_news_subscriptions')
+    .select('guild_id, channel_id, hour, minute, last_sent_on')
+    .eq('guild_id', guildId)
+    .eq('enabled', true)
+    .maybeSingle();
+  if (error) throw error;
+  if (!subscription) throw new Error('활성화된 소식 알림 설정이 없습니다.');
+  const now = getKstDateParts();
+  const today = `${now.year}-${String(now.month).padStart(2, '0')}-${String(now.day).padStart(2, '0')}`;
+  const articles = await fetchOfficialValorantNews();
+  return sendPendingNews(client, subscription, articles, today);
 }
 
 async function processNewsNotifications(client) {
@@ -166,7 +167,7 @@ async function processNewsNotifications(client) {
   const today = `${now.year}-${String(now.month).padStart(2, '0')}-${String(now.day).padStart(2, '0')}`;
   const { data: subscriptions, error } = await supabase
     .from('valorant_news_subscriptions')
-    .select('guild_id, channel_id, thread_id, hour, minute, last_sent_on')
+    .select('guild_id, channel_id, hour, minute, last_sent_on')
     .eq('enabled', true);
   if (error) {
     if (error.code !== '42P01' && error.code !== 'PGRST205') console.error(`소식 알림 목록 조회 실패: ${error.message}`);
