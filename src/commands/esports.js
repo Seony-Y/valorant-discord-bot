@@ -51,14 +51,14 @@ export const data = new SlashCommandBuilder()
     .setDescription('예정되었거나 진행 중인 공식 경기 일정을 조회합니다.')))
   .addSubcommand((subcommand) => subcommand
     .setName('순위')
-    .setDescription('공식 대회 순위표 또는 브래킷 결과를 조회합니다.')
+    .setDescription('공식 대회의 팀별 순위표를 조회합니다.')
     .addStringOption((option) => option
       .setName('대회')
       .setDescription('조회할 공식 대회')
       .setAutocomplete(true))
     .addStringOption((option) => option
       .setName('단계')
-      .setDescription('정규 리그, 플레이-인 또는 플레이오프')
+      .setDescription('팀별 순위표가 있는 그룹 단계')
       .setAutocomplete(true)))
   .addSubcommand((subcommand) => addCommonEventOptions(subcommand
     .setName('결과')
@@ -94,6 +94,7 @@ export async function autocomplete(interaction) {
       }
       const stages = await fetchTournamentStages(tournamentId);
       await interaction.respond(stages
+        .filter((stage) => stage.type === '그룹')
         .filter((stage) => `${stage.name} ${stage.type}`.toLowerCase().includes(query))
         .slice(0, 25)
         .map((stage) => ({ name: truncateChoiceName(`${stage.name} · ${stage.type}`), value: stage.id })));
@@ -330,36 +331,19 @@ async function showStandings(interaction) {
   let display;
   if (requestedStageId) {
     display = await fetchOfficialStageDisplay(tournamentId, requestedStageId);
+    if (!display.groups.length) {
+      throw new Error('선택한 단계에는 공식 팀 순위표가 없습니다. 경기 결과는 `/대회 결과`에서 확인해주세요.');
+    }
   } else {
-    for (const stage of [...stages].reverse()) {
+    for (const stage of [...stages].reverse().filter((item) => item.type === '그룹')) {
       const candidate = await fetchOfficialStageDisplay(tournamentId, stage.id);
-      if (candidate.groups.length || candidate.matches.length) {
+      if (candidate.groups.length) {
         display = candidate;
         break;
       }
     }
   }
-  if (!display) throw new Error('선택한 대회의 공식 순위 데이터를 찾지 못했습니다.');
-  if (display.matches.length) {
-    const events = await fetchTierOneEvents();
-    const eventsById = new Map(events.map((event) => [event.id, event]));
-    const matches = sortResultsLatest(display.matches, eventsById);
-    await showMatchPages(
-      interaction,
-      matches,
-      (match) => {
-        const event = eventsById.get(match.id);
-        const startTime = event?.startTime ?? match.startTime;
-        return matchCard(
-          match.teams,
-          [startTime ? formatKoreanDateTime(startTime) : null, `${display.title} · ${display.stage.name}`],
-          { event, bestOfCount: event?.match?.strategy?.count, attachmentName: `match-${match.id}.png` }
-        );
-      },
-      '공식 페이지에서 브래킷 결과를 찾지 못했습니다.'
-    );
-    return;
-  }
+  if (!display) throw new Error('선택한 대회에는 공식 팀 순위표가 없습니다. 경기 결과는 `/대회 결과`에서 확인해주세요.');
   await interaction.editReply({ embeds: [buildStandingsEmbed(display)] });
 }
 

@@ -184,7 +184,8 @@ function findRankingRow($, teamElement) {
   let row = $(teamElement);
   for (let depth = 0; depth < 6 && row.length; depth += 1) {
     const text = row.text().replace(/\s+/g, ' ').trim();
-    if (/^\d+/.test(text) && /\d+승\s*-\s*\d+패/.test(text) && row.find('[aria-label]').length === 1) return row;
+    const rank = row.children().first().text().trim();
+    if (/^\d+$/.test(rank) && /\d+승\s*-\s*\d+패/.test(text) && row.find('[aria-label]').length === 1) return row;
     row = row.parent();
   }
   return null;
