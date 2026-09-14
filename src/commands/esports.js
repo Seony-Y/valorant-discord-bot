@@ -176,6 +176,22 @@ function eventCard(event, mode) {
     : matchCard(teams, { state: event.state, lines });
 }
 
+function matchNumber(match) {
+  return Number(match.description?.match(/\d+/)?.[0] ?? 0);
+}
+
+function sortResultsLatest(matches, eventsById = new Map()) {
+  return [...matches].sort((left, right) => {
+    const numberDifference = matchNumber(right) - matchNumber(left);
+    if (matchNumber(left) && matchNumber(right) && numberDifference) return numberDifference;
+    const leftTime = eventsById.get(left.id)?.startTime ?? left.startTime;
+    const rightTime = eventsById.get(right.id)?.startTime ?? right.startTime;
+    const timeDifference = (rightTime ? new Date(rightTime).getTime() : 0)
+      - (leftTime ? new Date(leftTime).getTime() : 0);
+    return timeDifference || numberDifference;
+  });
+}
+
 function paginationControls(interactionId, page, pageCount, disabled = false) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -233,7 +249,7 @@ async function showEvents(interaction, mode) {
   const events = await fetchTierOneEvents(year, leagueSlug === 'all' ? undefined : leagueSlug);
   const visible = mode === '일정'
     ? events.filter((event) => event.state !== 'completed')
-    : events.filter((event) => event.state === 'completed').reverse();
+    : sortResultsLatest(events.filter((event) => event.state === 'completed'));
   await showMatchPages(
     interaction,
     visible,
@@ -263,14 +279,25 @@ function buildStandingsEmbed(display) {
 }
 
 async function showStandings(interaction) {
-  let tournamentId = interaction.options.getString('대회');
+  const requestedTournamentId = interaction.options.getString('대회');
+  const requestedStageId = interaction.options.getString('단계');
+  if (requestedStageId && !requestedTournamentId) {
+    throw new Error('`단계` 옵션을 사용하려면 먼저 `대회` 옵션을 선택해주세요.');
+  }
+
+  let tournamentId = requestedTournamentId;
   if (!tournamentId) {
     tournamentId = (await getLatestTournamentChoice())?.id;
   }
   if (!tournamentId) throw new Error('조회 가능한 공식 대회가 없습니다.');
 
-  const stages = await fetchTournamentStages(tournamentId);
-  const requestedStageId = interaction.options.getString('단계');
+  let stages;
+  try {
+    stages = await fetchTournamentStages(tournamentId);
+  } catch (error) {
+    if (requestedTournamentId) throw new Error('선택한 대회를 찾을 수 없습니다. `대회` 옵션에서 다시 선택해주세요.');
+    throw error;
+  }
   let display;
   if (requestedStageId) {
     display = await fetchOfficialStageDisplay(tournamentId, requestedStageId);
@@ -287,9 +314,10 @@ async function showStandings(interaction) {
   if (display.matches.length) {
     const events = await fetchTierOneEvents();
     const eventsById = new Map(events.map((event) => [event.id, event]));
+    const matches = sortResultsLatest(display.matches, eventsById);
     await showMatchPages(
       interaction,
-      display.matches,
+      matches,
       (match) => {
         const event = eventsById.get(match.id);
         const startTime = event?.startTime ?? match.startTime;
@@ -306,12 +334,35 @@ async function showStandings(interaction) {
   await interaction.editReply({ embeds: [buildStandingsEmbed(display)] });
 }
 
+function tournamentErrorMessage(error) {
+  if (/^[^A-Za-z]*[가-힣]/.test(error?.message ?? '')) return error.message;
+  if (error?.code === 'ECONNABORTED' || error?.code === 'ETIMEDOUT') {
+    return '공식 대회 서버 응답 시간이 초과됐습니다. 잠시 후 다시 시도해주세요.';
+  }
+  if (error?.response?.status === 404) {
+    return '선택한 공식 대회 데이터를 찾을 수 없습니다. 옵션을 다시 선택해주세요.';
+  }
+  if ([401, 403].includes(error?.response?.status)) {
+    return '공식 대회 서버가 요청을 거부했습니다. 잠시 후 다시 시도해주세요.';
+  }
+  return '공식 대회 데이터를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.';
+}
+
 export async function execute(interaction) {
   await interaction.deferReply();
-  const action = interaction.options.getSubcommand();
-  if (action === '순위') {
-    await showStandings(interaction);
-    return;
+  try {
+    const action = interaction.options.getSubcommand();
+    if (action === '순위') {
+      await showStandings(interaction);
+      return;
+    }
+    await showEvents(interaction, action);
+  } catch (error) {
+    console.error('대회 조회 실패:', error);
+    await interaction.editReply({
+      content: `대회 조회 실패: ${tournamentErrorMessage(error)}`,
+      embeds: [],
+      components: [],
+    });
   }
-  await showEvents(interaction, action);
 }
