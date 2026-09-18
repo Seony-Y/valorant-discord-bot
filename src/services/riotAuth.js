@@ -329,12 +329,16 @@ export async function getStorefront({ accessToken, entitlementsToken, puuid, sha
   return data;
 }
 
-const LUXE_KNIFE_UUID = '4af88517-4949-9caa-9dda-1980f07202a4';
-
 function resolveSkinImage(skin, itemId = null) {
-  if (skin?.uuid !== LUXE_KNIFE_UUID) return skin?.displayIcon ?? null;
-  const level = skin.levels?.find((entry) => entry.uuid === itemId) ?? skin.levels?.[0];
-  return level?.displayIcon ?? skin.displayIcon ?? null;
+  const level = skin?.levels?.find((entry) => entry.uuid === itemId);
+  const chroma = skin?.chromas?.find((entry) => entry.uuid === itemId);
+  return level?.displayIcon
+    ?? chroma?.displayIcon
+    ?? skin?.displayIcon
+    ?? skin?.levels?.find((entry) => entry.displayIcon)?.displayIcon
+    ?? skin?.chromas?.find((entry) => entry.displayIcon)?.displayIcon
+    ?? skin?.chromas?.find((entry) => entry.fullRender)?.fullRender
+    ?? null;
 }
 
 /** Map skin panel offer UUIDs to display metadata via valorant-api.com. */
