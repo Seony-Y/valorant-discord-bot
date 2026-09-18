@@ -43,7 +43,7 @@ export async function execute(interaction) {
 
   const statuses = await Promise.all(targets.map(async (account) => ({
     account,
-    status: await getStoreAccountStatus(account),
+    status: await getStoreAccountStatus(interaction.user.id, account),
   })));
   const expired = statuses.filter(({ status }) => status === '재로그인 필요');
   if (!expired.length) {

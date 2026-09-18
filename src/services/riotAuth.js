@@ -82,6 +82,14 @@ async function getSsid(jar) {
   return cookies.find((cookie) => cookie.key === 'ssid')?.value ?? null;
 }
 
+function extractRotatedSsid(setCookieHeaders, previousSsid) {
+  for (const header of setCookieHeaders ?? []) {
+    const match = header.match(/^ssid=([^;]+)/);
+    if (match && match[1] && match[1] !== previousSsid) return match[1];
+  }
+  return null;
+}
+
 export async function startRiotQrLogin(countryCode = process.env.RIOT_QR_LOCALE ?? 'ko-KR') {
   const { client, jar } = newSession();
   const sdkSid = crypto.randomUUID();
@@ -222,7 +230,9 @@ export async function restoreRiotStoreSession({ ssid, puuid, shard }) {
     if ([401, 403].includes(error.response?.status)) throw createSessionExpiredError();
     throw error;
   });
-  return { accessToken, entitlementsToken: entitlementsRes.data.entitlements_token, puuid, shard };
+  // Riot rotates the ssid cookie on every reauth; persist it or the session expires early.
+  const rotatedSsid = extractRotatedSsid(headers['set-cookie'], ssid);
+  return { accessToken, entitlementsToken: entitlementsRes.data.entitlements_token, puuid, shard, rotatedSsid };
 }
 
 async function completeAuthorization(client, headers, authData) {

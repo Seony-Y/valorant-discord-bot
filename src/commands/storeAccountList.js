@@ -1,7 +1,7 @@
 import { MessageFlags, SlashCommandBuilder } from 'discord.js';
 import { decryptCredential, getRiotDisplayName, restoreRiotStoreSession } from '../services/riotAuth.js';
 import { supabase } from '../services/supabase.js';
-import { getStoreAccountStatus } from '../services/storeAccounts.js';
+import { getStoreAccountStatus, persistRotatedSsid } from '../services/storeAccounts.js';
 
 export const data = new SlashCommandBuilder()
   .setName('상점계정목록')
@@ -27,12 +27,13 @@ export async function execute(interaction) {
   }
 
   const resolvedAccounts = await Promise.all(accounts.map(async (account) => {
-    const status = await getStoreAccountStatus(account);
+    const status = await getStoreAccountStatus(interaction.user.id, account);
     if (status !== '정상' || (account.riot_name && account.riot_tag)) return { ...account, status };
 
     try {
       const ssid = decryptCredential({ encrypted: account.encrypted_ssid, iv: account.iv, authTag: account.auth_tag });
       const session = await restoreRiotStoreSession({ ssid, puuid: account.puuid, shard: account.shard });
+      await persistRotatedSsid(interaction.user.id, account.account_name, session);
       const displayName = await getRiotDisplayName(session);
       if (!displayName) return account;
 

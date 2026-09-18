@@ -29,7 +29,7 @@ export async function execute(interaction) {
 
   if (accounts?.length) {
     const accountLines = await Promise.all(accounts.map(async (account) => {
-      const status = await getStoreAccountStatus(account);
+      const status = await getStoreAccountStatus(interaction.user.id, account);
       const defaultLabel = account.is_default ? ' · 기본' : '';
       const riotLabel = account.riot_name && account.riot_tag ? ` · ${account.riot_name}#${account.riot_tag}` : '';
       return `- **${account.account_name}**${riotLabel}${defaultLabel} · ${status}`;

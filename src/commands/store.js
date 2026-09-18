@@ -12,7 +12,7 @@ import {
   resolveStoreItems,
 } from '../services/riotAuth.js';
 import { supabase } from '../services/supabase.js';
-import { autocompleteStoreAccount } from '../services/storeAccounts.js';
+import { autocompleteStoreAccount, persistRotatedSsid } from '../services/storeAccounts.js';
 
 const STORE_VIEW_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const storeViews = new Map();
@@ -356,6 +356,7 @@ export async function execute(interaction) {
   try {
     const ssid = decryptCredential({ encrypted: cred.encrypted_ssid, iv: cred.iv, authTag: cred.auth_tag });
     const session = await restoreRiotStoreSession({ ssid, puuid: cred.puuid, shard: cred.shard });
+    await persistRotatedSsid(interaction.user.id, accountName, session);
     let riotName = cred.riot_name;
     let riotTag = cred.riot_tag;
     if (!riotName || !riotTag) {

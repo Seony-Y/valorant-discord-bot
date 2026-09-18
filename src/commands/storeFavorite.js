@@ -52,7 +52,7 @@ async function getFavorites(userId) {
 
 function getNotificationStatus(result) {
   if (result.status === 'session-expired') {
-    return `연동 기록은 있지만 Riot 세션이 만료되었습니다: **${result.accounts.join(', ')}**. `/상점연동`으로 다시 로그인해주세요.`;
+    return `연동 기록은 있지만 Riot 세션이 만료되었습니다: **${result.accounts.join(', ')}**. \`/상점연동\`으로 다시 로그인해주세요.`;
   }
   const expiredMessage = result.expiredAccounts?.length
     ? ` 세션이 만료된 계정은 다시 연동해주세요: **${result.expiredAccounts.join(', ')}**.`

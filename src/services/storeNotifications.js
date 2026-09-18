@@ -2,6 +2,7 @@ import { decryptCredential, restoreRiotStoreSession } from './riotAuth.js';
 import { supabase } from './supabase.js';
 import { AttachmentBuilder } from 'discord.js';
 import { createStorePages, VALORANT_POINTS_IMAGE } from '../commands/store.js';
+import { persistRotatedSsid } from './storeAccounts.js';
 
 const NOTIFICATION_INTERVAL_MS = 60 * 1000;
 let notificationTimer;
@@ -25,9 +26,10 @@ function getKstDate(date = new Date()) {
   return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 }
 
-async function getFavoriteMatches(account, favoriteNames) {
+async function getFavoriteMatches(discordId, account, favoriteNames) {
   const ssid = decryptCredential({ encrypted: account.encrypted_ssid, iv: account.iv, authTag: account.auth_tag });
   const session = await restoreRiotStoreSession({ ssid, puuid: account.puuid, shard: account.shard });
+  await persistRotatedSsid(discordId, account.account_name, session);
   const { favoriteMatches, favoriteEmbeds } = await createStorePages(session, favoriteNames);
   return { favoriteMatches, favoriteEmbeds };
 }
@@ -61,7 +63,7 @@ export async function checkFavoritesAfterAdd(client, userId, itemNames) {
   let checkedAccountCount = 0;
   for (const account of targetAccounts) {
     try {
-      const { favoriteMatches: matches, favoriteEmbeds } = await getFavoriteMatches(account, itemNames);
+      const { favoriteMatches: matches, favoriteEmbeds } = await getFavoriteMatches(userId, account, itemNames);
       checkedAccountCount += 1;
       if (matches.length) matchedByAccount.push({
         accountName: account.account_name,
@@ -116,6 +118,7 @@ async function sendStoreNotification(client, notification) {
 
   const ssid = decryptCredential({ encrypted: account.encrypted_ssid, iv: account.iv, authTag: account.auth_tag });
   const session = await restoreRiotStoreSession({ ssid, puuid: account.puuid, shard: account.shard });
+  await persistRotatedSsid(notification.discord_id, notification.account_name, session);
   const { data: favorites, error: favoritesError } = await supabase
     .from('store_favorites')
     .select('item_name, last_notified_on')
@@ -220,7 +223,7 @@ async function processFavoriteRefreshNotifications(client) {
       if (!scheduledUserIds.has(userId)) {
         const matchedByAccount = [];
         for (const account of (accounts ?? []).filter((entry) => entry.discord_id === userId)) {
-          const { favoriteMatches: matches, favoriteEmbeds } = await getFavoriteMatches(account, itemNames);
+          const { favoriteMatches: matches, favoriteEmbeds } = await getFavoriteMatches(userId, account, itemNames);
           if (matches.length) matchedByAccount.push({
             accountName: account.account_name,
             matches,
@@ -254,6 +257,20 @@ async function processFavoriteRefreshNotifications(client) {
       if (updateError) throw updateError;
     } catch (error) {
       console.warn(`즐겨찾기 갱신 확인 실패 (${userId}): ${error.message}`);
+      if (error.code === 'RIOT_SESSION_EXPIRED') {
+        // Mark checked so the same expired session isn't retried (and re-warned) every cycle today.
+        await supabase
+          .from('store_favorites')
+          .update({ last_checked_on: today })
+          .eq('discord_id', userId)
+          .in('item_name', itemNames);
+        try {
+          const user = await client.users.fetch(userId);
+          await user.send('즐겨찾기 갱신을 확인하지 못했습니다. Riot 로그인 세션이 만료되었으니 `/상점연동`으로 다시 로그인해주세요.');
+        } catch (dmError) {
+          console.warn(`세션 만료 안내 DM 실패 (${userId}): ${dmError.message}`);
+        }
+      }
     }
   }
 }

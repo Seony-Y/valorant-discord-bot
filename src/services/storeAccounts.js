@@ -1,4 +1,4 @@
-import { decryptCredential, restoreRiotStoreSession } from './riotAuth.js';
+import { decryptCredential, encryptCredential, restoreRiotStoreSession } from './riotAuth.js';
 import { supabase } from './supabase.js';
 
 export async function autocompleteStoreAccount(interaction, optionName = '계정명') {
@@ -24,13 +24,30 @@ export async function autocompleteStoreAccount(interaction, optionName = '계정
   })));
 }
 
-export async function getStoreAccountStatus(account) {
+export async function getStoreAccountStatus(discordId, account) {
   try {
     const ssid = decryptCredential({ encrypted: account.encrypted_ssid, iv: account.iv, authTag: account.auth_tag });
-    await restoreRiotStoreSession({ ssid, puuid: account.puuid, shard: account.shard });
+    const session = await restoreRiotStoreSession({ ssid, puuid: account.puuid, shard: account.shard });
+    await persistRotatedSsid(discordId, account.account_name, session);
     return '정상';
   } catch (error) {
     if (error?.code === 'RIOT_SESSION_EXPIRED') return '재로그인 필요';
     return '조회 실패';
   }
+}
+
+// Riot rotates the ssid cookie on every reauth; without saving it back, sessions expire far sooner than intended.
+export async function persistRotatedSsid(discordId, accountName, session) {
+  if (!session?.rotatedSsid) return;
+  const encrypted = encryptCredential(session.rotatedSsid);
+  await supabase
+    .from('riot_store_sessions')
+    .update({
+      encrypted_ssid: encrypted.encrypted,
+      iv: encrypted.iv,
+      auth_tag: encrypted.authTag,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('discord_id', discordId)
+    .eq('account_name', accountName);
 }
