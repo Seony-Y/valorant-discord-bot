@@ -46,7 +46,12 @@ export async function execute(interaction) {
     status: await getStoreAccountStatus(interaction.user.id, account),
   })));
   const expired = statuses.filter(({ status }) => status === '재로그인 필요');
+  const unavailable = statuses.filter(({ status }) => status === 'Riot 서버 점검 중');
   if (!expired.length) {
+    if (unavailable.length) {
+      await interaction.editReply('Riot 서버 점검 중이라 계정 만료 여부를 확인하지 못했습니다. 계정을 삭제하지 않았습니다.');
+      return;
+    }
     await interaction.editReply(accountName
       ? `**${accountName}** 계정은 아직 정상 상태입니다. 삭제하지 않았습니다.`
       : '쿠키가 만료된 계정이 없습니다. 삭제하지 않았습니다.');
@@ -64,5 +69,8 @@ export async function execute(interaction) {
   }
 
   const names = expired.map(({ account }) => `**${account.account_name}**`).join(', ');
-  await interaction.editReply(`쿠키가 만료된 상점 계정을 삭제했습니다: ${names}`);
+  const unavailableMessage = unavailable.length
+    ? '\n점검 중이라 확인하지 못한 계정은 삭제하지 않았습니다.'
+    : '';
+  await interaction.editReply(`쿠키가 만료된 상점 계정을 삭제했습니다: ${names}${unavailableMessage}`);
 }

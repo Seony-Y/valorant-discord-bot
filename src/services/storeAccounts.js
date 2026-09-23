@@ -26,14 +26,20 @@ export async function autocompleteStoreAccount(interaction, optionName = '계정
 
 export async function getStoreAccountStatus(discordId, account) {
   try {
-    const ssid = decryptCredential({ encrypted: account.encrypted_ssid, iv: account.iv, authTag: account.auth_tag });
-    const session = await restoreRiotStoreSession({ ssid, puuid: account.puuid, shard: account.shard });
-    await persistRotatedSsid(discordId, account.account_name, session);
+    await restoreStoreAccountSession(discordId, account);
     return '정상';
   } catch (error) {
     if (error?.code === 'RIOT_SESSION_EXPIRED') return '재로그인 필요';
+    if (error?.code === 'RIOT_SERVICE_UNAVAILABLE') return 'Riot 서버 점검 중';
     return '조회 실패';
   }
+}
+
+export async function restoreStoreAccountSession(discordId, account) {
+  const ssid = decryptCredential({ encrypted: account.encrypted_ssid, iv: account.iv, authTag: account.auth_tag });
+  const session = await restoreRiotStoreSession({ ssid, puuid: account.puuid, shard: account.shard });
+  await persistRotatedSsid(discordId, account.account_name, session);
+  return session;
 }
 
 // Riot rotates the ssid cookie on every reauth; without saving it back, sessions expire far sooner than intended.

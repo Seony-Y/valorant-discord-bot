@@ -5,8 +5,10 @@ import { createStorePages, VALORANT_POINTS_IMAGE } from '../commands/store.js';
 import { persistRotatedSsid } from './storeAccounts.js';
 
 const NOTIFICATION_INTERVAL_MS = 60 * 1000;
+const RIOT_MAINTENANCE_RETRY_MS = 15 * 60 * 1000;
 let notificationTimer;
 let favoriteRefreshRunning = false;
+let favoriteRefreshRetryAfter = 0;
 
 function getKstDateParts(date = new Date()) {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -222,13 +224,34 @@ async function processFavoriteRefreshNotifications(client) {
     try {
       if (!scheduledUserIds.has(userId)) {
         const matchedByAccount = [];
+        const expiredAccounts = [];
+        let checkedAccountCount = 0;
         for (const account of (accounts ?? []).filter((entry) => entry.discord_id === userId)) {
-          const { favoriteMatches: matches, favoriteEmbeds } = await getFavoriteMatches(userId, account, itemNames);
-          if (matches.length) matchedByAccount.push({
-            accountName: account.account_name,
-            matches,
-            embeds: favoriteEmbeds,
-          });
+          try {
+            const { favoriteMatches: matches, favoriteEmbeds } = await getFavoriteMatches(userId, account, itemNames);
+            checkedAccountCount += 1;
+            if (matches.length) matchedByAccount.push({
+              accountName: account.account_name,
+              matches,
+              embeds: favoriteEmbeds,
+            });
+          } catch (error) {
+            if (error.code === 'RIOT_SESSION_EXPIRED') {
+              expiredAccounts.push(account.account_name);
+              continue;
+            }
+            throw error;
+          }
+        }
+        if (!checkedAccountCount && expiredAccounts.length) {
+          try {
+            const user = await client.users.fetch(userId);
+            await user.send(
+              `즐겨찾기 갱신을 확인하지 못했습니다. 다음 Riot 로그인 세션이 만료되었으니 \`/상점연동\`으로 다시 로그인해주세요: ${expiredAccounts.join(', ')}`
+            );
+          } catch (dmError) {
+            console.warn(`세션 만료 안내 DM 실패 (${userId}): ${dmError.message}`);
+          }
         }
         if (matchedByAccount.length) {
           const user = await client.users.fetch(userId);
@@ -257,26 +280,16 @@ async function processFavoriteRefreshNotifications(client) {
       if (updateError) throw updateError;
     } catch (error) {
       console.warn(`즐겨찾기 갱신 확인 실패 (${userId}): ${error.message}`);
-      if (error.code === 'RIOT_SESSION_EXPIRED') {
-        // Mark checked so the same expired session isn't retried (and re-warned) every cycle today.
-        await supabase
-          .from('store_favorites')
-          .update({ last_checked_on: today })
-          .eq('discord_id', userId)
-          .in('item_name', itemNames);
-        try {
-          const user = await client.users.fetch(userId);
-          await user.send('즐겨찾기 갱신을 확인하지 못했습니다. Riot 로그인 세션이 만료되었으니 `/상점연동`으로 다시 로그인해주세요.');
-        } catch (dmError) {
-          console.warn(`세션 만료 안내 DM 실패 (${userId}): ${dmError.message}`);
-        }
+      if (error.code === 'RIOT_SERVICE_UNAVAILABLE') {
+        favoriteRefreshRetryAfter = Date.now() + RIOT_MAINTENANCE_RETRY_MS;
+        return;
       }
     }
   }
 }
 
 function runFavoriteRefreshNotifications(client) {
-  if (favoriteRefreshRunning) return;
+  if (favoriteRefreshRunning || Date.now() < favoriteRefreshRetryAfter) return;
   favoriteRefreshRunning = true;
   processFavoriteRefreshNotifications(client)
     .catch((error) => console.error(`즐겨찾기 갱신 처리 실패: ${error.message}`))

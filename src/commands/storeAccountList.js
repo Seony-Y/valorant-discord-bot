@@ -1,7 +1,7 @@
 import { MessageFlags, SlashCommandBuilder } from 'discord.js';
-import { decryptCredential, getRiotDisplayName, restoreRiotStoreSession } from '../services/riotAuth.js';
+import { getRiotDisplayName } from '../services/riotAuth.js';
 import { supabase } from '../services/supabase.js';
-import { getStoreAccountStatus, persistRotatedSsid } from '../services/storeAccounts.js';
+import { getStoreAccountStatus, restoreStoreAccountSession } from '../services/storeAccounts.js';
 
 export const data = new SlashCommandBuilder()
   .setName('상점계정목록')
@@ -27,28 +27,31 @@ export async function execute(interaction) {
   }
 
   const resolvedAccounts = await Promise.all(accounts.map(async (account) => {
-    const status = await getStoreAccountStatus(interaction.user.id, account);
-    if (status !== '정상' || (account.riot_name && account.riot_tag)) return { ...account, status };
+    if (!account.riot_name || !account.riot_tag) {
+      try {
+        const session = await restoreStoreAccountSession(interaction.user.id, account);
+        const displayName = await getRiotDisplayName(session);
+        if (!displayName) return { ...account, status: '정상' };
 
-    try {
-      const ssid = decryptCredential({ encrypted: account.encrypted_ssid, iv: account.iv, authTag: account.auth_tag });
-      const session = await restoreRiotStoreSession({ ssid, puuid: account.puuid, shard: account.shard });
-      await persistRotatedSsid(interaction.user.id, account.account_name, session);
-      const displayName = await getRiotDisplayName(session);
-      if (!displayName) return account;
-
-      let accountName = account.account_name;
-      if (accountName === '기본계정') accountName = `${displayName.riotName}#${displayName.riotTag}`;
-      const { error: updateError } = await supabase
-        .from('riot_store_sessions')
-        .update({ account_name: accountName, riot_name: displayName.riotName, riot_tag: displayName.riotTag })
-        .eq('discord_id', interaction.user.id)
-        .eq('account_name', account.account_name);
-      return { ...account, ...displayName, status, account_name: updateError ? account.account_name : accountName };
-    } catch (error) {
-      console.warn(`상점 계정 닉네임 조회 실패 (${account.account_name}): ${error.message}`);
-      return { ...account, status };
+        let accountName = account.account_name;
+        if (accountName === '기본계정') accountName = `${displayName.riotName}#${displayName.riotTag}`;
+        const { error: updateError } = await supabase
+          .from('riot_store_sessions')
+          .update({ account_name: accountName, riot_name: displayName.riotName, riot_tag: displayName.riotTag })
+          .eq('discord_id', interaction.user.id)
+          .eq('account_name', account.account_name);
+        return { ...account, ...displayName, status: '정상', account_name: updateError ? account.account_name : accountName };
+      } catch (error) {
+        console.warn(`상점 계정 닉네임 조회 실패 (${account.account_name}): ${error.message}`);
+        const status = error.code === 'RIOT_SESSION_EXPIRED'
+          ? '재로그인 필요'
+          : error.code === 'RIOT_SERVICE_UNAVAILABLE' ? 'Riot 서버 점검 중' : '조회 실패';
+        return { ...account, status };
+      }
     }
+
+    const status = await getStoreAccountStatus(interaction.user.id, account);
+    return { ...account, status };
   }));
 
   const lines = resolvedAccounts

@@ -303,7 +303,7 @@ export async function getRiotDisplayName({ accessToken, entitlementsToken, puuid
         'X-Riot-ClientPlatform': clientPlatform,
       },
     }
-  );
+  ).catch(throwMappedRiotAuthError);
   const player = data?.[0];
   return player?.GameName && player?.TagLine
     ? { riotName: player.GameName, riotTag: player.TagLine }
