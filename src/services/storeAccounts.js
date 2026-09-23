@@ -40,7 +40,7 @@ export async function getStoreAccountStatus(discordId, account) {
 export async function persistRotatedSsid(discordId, accountName, session) {
   if (!session?.rotatedSsid) return;
   const encrypted = encryptCredential(session.rotatedSsid);
-  await supabase
+  const { error } = await supabase
     .from('riot_store_sessions')
     .update({
       encrypted_ssid: encrypted.encrypted,
@@ -50,4 +50,5 @@ export async function persistRotatedSsid(discordId, accountName, session) {
     })
     .eq('discord_id', discordId)
     .eq('account_name', accountName);
+  if (error) throw error;
 }

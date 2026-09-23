@@ -405,6 +405,10 @@ export async function execute(interaction) {
       );
       return;
     }
+    if (err.code === 'RIOT_SERVICE_UNAVAILABLE') {
+      await interaction.editReply(err.message);
+      return;
+    }
     await interaction.editReply(`상점 조회에 실패했습니다: ${err.message}`);
   }
 }

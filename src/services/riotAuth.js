@@ -77,6 +77,18 @@ function createSessionExpiredError() {
   return error;
 }
 
+function createServiceUnavailableError() {
+  const error = new Error('Riot 서버가 점검 중이거나 일시적으로 상점 요청을 차단하고 있습니다. 잠시 후 다시 시도해주세요.');
+  error.code = 'RIOT_SERVICE_UNAVAILABLE';
+  return error;
+}
+
+function throwMappedRiotAuthError(error) {
+  if (error.response?.status === 401) throw createSessionExpiredError();
+  if (error.response?.status === 403) throw createServiceUnavailableError();
+  throw error;
+}
+
 async function getSsid(jar) {
   const cookies = await jar.getCookies('https://auth.riotgames.com');
   return cookies.find((cookie) => cookie.key === 'ssid')?.value ?? null;
@@ -117,7 +129,7 @@ export async function startRiotQrLogin(countryCode = process.env.RIOT_QR_LOCALE 
       client_id: 'riot-client',
       language: countryCode.replace('-', '_'),
       platform: 'windows',
-      remember: false,
+      remember: true,
       type: 'auth',
       qrcode: {},
     },
@@ -144,7 +156,7 @@ async function redeemQrLoginToken(loginToken) {
   const headers = qrHeaders(sdkSid, 'ko-KR');
   const loginTokenResponse = await client.post(
     'https://auth.riotgames.com/api/v1/login-token',
-    { authentication_type: null, code_verifier: '', login_token: loginToken, persist_login: false },
+    { authentication_type: null, code_verifier: '', login_token: loginToken, persist_login: true },
     { headers, validateStatus: (status) => status === 204 }
   );
 
@@ -208,7 +220,7 @@ export async function restoreRiotStoreSession({ ssid, puuid, shard }) {
     headers: { Cookie: `ssid=${ssid}`, 'User-Agent': 'RiotClient/1.0' },
     maxRedirects: 0,
     validateStatus: (status) => status >= 200 && status < 400,
-  });
+  }).catch(throwMappedRiotAuthError);
   const location = headers.location;
   if (!location) throw createSessionExpiredError();
 
@@ -226,10 +238,7 @@ export async function restoreRiotStoreSession({ ssid, puuid, shard }) {
       headers: { Authorization: `Bearer ${accessToken}` },
       validateStatus: (status) => status >= 200 && status < 300,
     }
-  ).catch((error) => {
-    if ([401, 403].includes(error.response?.status)) throw createSessionExpiredError();
-    throw error;
-  });
+  ).catch(throwMappedRiotAuthError);
   // Riot rotates the ssid cookie on every reauth; persist it or the session expires early.
   const rotatedSsid = extractRotatedSsid(headers['set-cookie'], ssid);
   return { accessToken, entitlementsToken: entitlementsRes.data.entitlements_token, puuid, shard, rotatedSsid };
@@ -325,7 +334,7 @@ export async function getStorefront({ accessToken, entitlementsToken, puuid, sha
         'X-Riot-ClientVersion': clientVersion,
       },
     }
-  );
+  ).catch(throwMappedRiotAuthError);
   return data;
 }
 
