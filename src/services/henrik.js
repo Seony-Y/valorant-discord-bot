@@ -10,10 +10,32 @@ const client = axios.create({
 
 let actsCache;
 let actsCachePromise;
+let valorantContentCache;
+let valorantContentCachedAt = 0;
+let valorantContentCachePromise;
 const seasonMatchesCache = new Map();
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const SEASON_CACHE_TTL_MS = 5 * 60 * 1000;
+const CONTENT_CACHE_TTL_MS = 15 * 60 * 1000;
+
+export async function getValorantContent() {
+  if (valorantContentCache && Date.now() - valorantContentCachedAt < CONTENT_CACHE_TTL_MS) {
+    return valorantContentCache;
+  }
+  if (valorantContentCachePromise) return valorantContentCachePromise;
+
+  valorantContentCachePromise = client.get('/valorant/v1/content', { params: { locale: 'ko-KR' } })
+    .then(({ data }) => {
+      valorantContentCache = data.data;
+      valorantContentCachedAt = Date.now();
+      return valorantContentCache;
+    })
+    .finally(() => {
+      valorantContentCachePromise = undefined;
+    });
+  return valorantContentCachePromise;
+}
 
 /** Resolve a Riot ID (name#tag) to puuid + region-aware account info. */
 export async function getAccount(name, tag) {
@@ -96,9 +118,9 @@ export async function getValorantActs() {
   if (actsCache) return actsCache;
   if (actsCachePromise) return actsCachePromise;
 
-  actsCachePromise = client.get('/valorant/v1/content', { params: { locale: 'ko-KR' } })
-    .then(({ data }) => {
-      const acts = data.data?.acts ?? [];
+  actsCachePromise = getValorantContent()
+    .then((content) => {
+      const acts = content?.acts ?? [];
       const episodesById = new Map(
         acts.filter((act) => act.type === 'episode').map((episode) => [episode.id, episode.name])
       );

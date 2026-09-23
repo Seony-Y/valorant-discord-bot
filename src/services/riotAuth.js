@@ -453,7 +453,9 @@ export async function resolveStoreItems(itemIds, riotContent = null) {
     const item = items.find(
       (entry) => entry.uuid === id || entry.levels?.some((level) => level.uuid === id) || entry.chromas?.some((chroma) => chroma.uuid === id)
     );
-    const riotItem = findRiotContentItem(riotContent, id);
+    const riotItem = (Array.isArray(riotContent) ? riotContent : [riotContent])
+      .map((content) => findRiotContentItem(content, id))
+      .find(Boolean);
     const tier = tiers.find((entry) => entry.uuid === item?.contentTierUuid);
     return {
       name: item?.displayName ?? getRiotContentName(riotItem) ?? '이름 정보 확인 중',

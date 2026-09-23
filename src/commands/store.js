@@ -13,6 +13,7 @@ import {
   resolveStoreItems,
 } from '../services/riotAuth.js';
 import { supabase } from '../services/supabase.js';
+import { getValorantContent } from '../services/henrik.js';
 import { autocompleteStoreAccount, persistRotatedSsid } from '../services/storeAccounts.js';
 
 const STORE_VIEW_TIMEOUT_MS = 24 * 60 * 60 * 1000;
@@ -221,13 +222,18 @@ function buildViewPayload(view) {
 }
 
 export async function createStorePages(session, favoriteNames = []) {
-  const [storefront, riotContent] = await Promise.all([
+  const [storefront, riotContent, henrikContent] = await Promise.all([
     getStorefront(session),
     getRiotContent(session).catch((error) => {
       console.warn(`Riot 콘텐츠 조회 실패: ${error.message}`);
       return null;
     }),
+    getValorantContent().catch((error) => {
+      console.warn(`Henrik 콘텐츠 조회 실패: ${error.message}`);
+      return null;
+    }),
   ]);
+  const currentContent = [riotContent, henrikContent].filter(Boolean);
   const offerIds = storefront.SkinsPanelLayout.SingleItemOffers;
   const dailyOffers = storefront.SkinsPanelLayout.SingleItemStoreOffers ?? [];
   const accessoryOffers = storefront.AccessoryStore?.AccessoryStoreOffers ?? [];
@@ -248,13 +254,13 @@ export async function createStorePages(session, favoriteNames = []) {
   ];
   const [offers, accessories, nightMarketOffers, bundlePages] = await Promise.all([
     resolveSkinOffers(offerIds),
-    resolveStoreItems(accessoryIds, riotContent),
+    resolveStoreItems(accessoryIds, currentContent),
     resolveSkinOffers(nightMarketDetails.map(({ itemId }) => itemId)),
     Promise.all(bundleEntries.map(async ({ source, startsAt, endsAt }) => {
       const itemEntries = getBundleItemEntries(source);
       const [bundle, contents] = await Promise.all([
         resolveBundle(source.ID, source.DataAssetID, source),
-        resolveStoreItems(itemEntries.map(({ Item }) => Item.ItemID), riotContent),
+        resolveStoreItems(itemEntries.map(({ Item }) => Item.ItemID), currentContent),
       ]);
       const items = contents.map((item, index) => ({
         ...item,
