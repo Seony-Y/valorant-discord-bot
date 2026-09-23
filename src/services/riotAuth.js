@@ -14,6 +14,24 @@ const QR_LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
 const CLIENT_VERSION_CACHE_TTL_MS = 15 * 60 * 1000;
 const pendingQrLogins = new Map();
 const clientVersionCache = new Map();
+const mediaImageCache = new Map();
+const ITEM_TYPE_MEDIA_PATHS = new Map([
+  ['e7c63390-eda7-46e0-bb7a-a6abdacd2433', 'weaponskinlevels'],
+  ['dd3bf334-87f3-40bd-b043-682a57a8dc3a', 'buddylevels'],
+  ['3f296c07-64c3-494c-923b-fe692a4fa1bd', 'playercards'],
+  ['d5f120f8-ff8c-4aac-92ea-f2b5acbe9475', 'sprays'],
+]);
+
+async function getMediaImage(path, itemId) {
+  if (!path || !itemId) return null;
+  const url = `https://media.valorant-api.com/${path}/${itemId}/displayicon.png`;
+  if (!mediaImageCache.has(url)) {
+    mediaImageCache.set(url, axios.head(url)
+      .then(({ headers }) => headers['content-type']?.startsWith('image/') ? url : null)
+      .catch(() => null));
+  }
+  return mediaImageCache.get(url);
+}
 
 async function getRiotClientVersion(shard) {
   const region = String(shard ?? 'kr').toLowerCase();
@@ -485,12 +503,21 @@ export async function resolveStoreItems(itemIds, riotContent = null, itemTypes =
   const items = responses.flatMap((response) => response.data.data);
   const tiers = responses[1].data.data;
 
-  return itemIds.map((id, index) => {
+  return Promise.all(itemIds.map(async (id, index) => {
     const item = items.find(
       (entry) => entry.uuid === id || entry.levels?.some((level) => level.uuid === id) || entry.chromas?.some((chroma) => chroma.uuid === id)
     );
     const riotItem = findContentItem(riotContent, id);
     const tier = tiers.find((entry) => entry.uuid === item?.contentTierUuid);
+    const knownImage = resolveSkinImage(item, id)
+      ?? item?.fullIcon
+      ?? item?.largeArt
+      ?? item?.wideArt
+      ?? getRiotContentImage(riotItem);
+    const mediaImage = knownImage ? null : await getMediaImage(
+        ITEM_TYPE_MEDIA_PATHS.get(itemTypes[index]?.toLowerCase()),
+        id,
+      );
     if (!item && !riotItem) {
       console.warn('[store-metadata] unresolved item', {
         itemId: id,
@@ -499,11 +526,11 @@ export async function resolveStoreItems(itemIds, riotContent = null, itemTypes =
     }
     return {
       name: item?.displayName ?? getRiotContentName(riotItem) ?? '이름 정보 확인 중',
-      image: resolveSkinImage(item, id) ?? item?.fullIcon ?? item?.largeArt ?? item?.wideArt ?? getRiotContentImage(riotItem),
+      image: knownImage ?? mediaImage,
       tierImage: tier?.displayIcon ?? null,
       tierName: tier?.displayName ?? '콘텐츠 티어',
     };
-  });
+  }));
 }
 
 export async function resolveBundle(bundleId, alternateId = null, storefrontBundle = null, riotContent = null) {
@@ -525,7 +552,8 @@ export async function resolveBundle(bundleId, alternateId = null, storefrontBund
       ?? storefrontBundle?.image
       ?? storefrontBundle?.VerticalPromoImage
       ?? storefrontBundle?.verticalPromoImage
-      ?? getRiotContentImage(riotBundle);
+      ?? getRiotContentImage(riotBundle)
+      ?? await getMediaImage('bundles', alternateId);
     if (!riotBundle && name === '출시 예정 번들') {
       console.warn('[store-metadata] unresolved bundle', { bundleId, dataAssetId: alternateId });
     }
