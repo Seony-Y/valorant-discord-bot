@@ -150,41 +150,6 @@ function getNightMarketOfferDetails(storefront) {
   );
 }
 
-function getBundleSchedule(storefront) {
-  const featured = storefront.FeaturedBundle ?? {};
-  const currentBundle = featured.Bundle;
-  const duration = currentBundle?.DurationRemainingInSeconds ?? featured.BundleRemainingDurationInSeconds;
-  const endsAt = Number.isFinite(duration) ? new Date(Date.now() + duration * 1000) : null;
-  const currentId = currentBundle?.ID ?? currentBundle?.DataAssetID;
-  const next = (featured.Bundles ?? [])
-    .filter((bundle) => (bundle.ID ?? bundle.DataAssetID) !== currentId)
-    .map((bundle) => {
-      const startDates = (bundle.ItemOffers ?? [])
-        .map((offer) => offer.Offer?.StartDate ?? offer.StartDate)
-        .map((value) => new Date(value))
-        .filter((date) => Number.isFinite(date.getTime()) && date > new Date());
-      return { id: bundle.ID ?? bundle.DataAssetID, startsAt: startDates.sort((left, right) => left - right)[0] };
-    })
-    .filter((bundle) => bundle.startsAt)
-    .sort((left, right) => left.startsAt - right.startsAt)[0];
-  return { endsAt, next };
-}
-
-function getBundleStartDate(bundle) {
-  const values = [
-    bundle?.StartDate,
-    bundle?.startDate,
-    bundle?.BundleStartDate,
-    ...(bundle?.ItemOffers ?? []).map((offer) => offer.Offer?.StartDate ?? offer.StartDate),
-    ...(bundle?.Items ?? []).map((entry) => entry.Offer?.StartDate ?? entry.StartDate),
-  ];
-  const dates = values
-    .map((value) => new Date(value))
-    .filter((date) => Number.isFinite(date.getTime()) && date.getUTCFullYear() >= 2020)
-    .sort((left, right) => left - right);
-  return dates[0] ?? null;
-}
-
 function getBundleEndDate(bundle, fallbackDuration = null) {
   const duration = bundle?.DurationRemainingInSeconds ?? fallbackDuration;
   return Number.isFinite(duration) && duration >= 0
@@ -227,61 +192,35 @@ export async function createStorePages(session, favoriteNames = []) {
   const accessoryIds = getAccessoryItemIds(storefront);
   const nightMarketDetails = getNightMarketOfferDetails(storefront);
   const featuredBundle = storefront.FeaturedBundle?.Bundle;
-  const bundleSchedule = getBundleSchedule(storefront);
-  const bundleId = featuredBundle?.ID ?? featuredBundle?.DataAssetID;
-  const upcomingBundleEntries = (storefront.FeaturedBundle?.Bundles ?? [])
-    .filter((entry) => (entry.ID ?? entry.DataAssetID) && (entry.ID ?? entry.DataAssetID) !== bundleId);
-  const upcomingEntries = upcomingBundleEntries
-    .map((entry) => ({ source: entry, startsAt: getBundleStartDate(entry) }))
-    .sort((left, right) => {
-      if (!left.startsAt) return 1;
-      if (!right.startsAt) return -1;
-      return left.startsAt - right.startsAt;
-    });
-  const bundleEntries = [
-    ...(featuredBundle ? [{
-      source: featuredBundle,
-      startsAt: getBundleStartDate(featuredBundle),
-      endsAt: getBundleEndDate(featuredBundle, storefront.FeaturedBundle?.BundleRemainingDurationInSeconds),
-    }] : []),
-    ...upcomingEntries.map((entry) => ({
-      source: entry.source,
-      startsAt: entry.startsAt,
-      endsAt: getBundleEndDate(entry.source),
-    })),
-  ];
-  const [offers, accessories, bundle, nightMarketOffers, bundlePages] = await Promise.all([
+  const bundleEntries = (featuredBundle?.Items ?? []).filter(({ Item }) => Item?.ItemID);
+  const bundleItemIds = bundleEntries.map(({ Item }) => Item.ItemID);
+  const [offers, accessories, bundle, bundleContents, nightMarketOffers] = await Promise.all([
     resolveSkinOffers(offerIds),
     resolveStoreItems(accessoryIds),
-    resolveBundle(bundleId),
+    resolveBundle(featuredBundle?.ID, featuredBundle?.DataAssetID),
+    resolveStoreItems(bundleItemIds),
     resolveSkinOffers(nightMarketDetails.map(({ itemId }) => itemId)),
-    Promise.all(bundleEntries.map(async ({ source, startsAt, endsAt }) => {
-      const [bundleInfo, contents] = await Promise.all([
-        resolveBundle(source.ID, source.DataAssetID),
-        resolveStoreItems((source.Items ?? []).map(({ Item }) => Item?.ItemID).filter(Boolean)),
-      ]);
-      const detailedItems = contents.map((item, index) => ({
-        ...item,
-        cost: source.Items[index]?.DiscountedPrice ?? source.Items[index]?.BasePrice,
-        originalCost: source.Items[index]?.BasePrice,
-        discountPercent: source.Items[index]?.DiscountPercent,
-      }));
-      return {
-        embeds: makeBundleEmbeds(
-          bundleInfo,
-          detailedItems,
-          source.TotalDiscountedCost ?? source.TotalBaseCost,
-          source.TotalBaseCost,
-          source.TotalDiscountPercent,
-          { startsAt, endsAt },
-        ),
-      };
-    })),
   ]);
   const dailyPrices = getPriceByRewardId(dailyOffers);
   const accessoryPrices = getPriceByRewardId(accessoryOffers);
 
   const dailyItems = offers.map((offer, index) => ({ ...offer, cost: dailyPrices.get(offerIds[index]) }));
+  const bundleItems = bundleContents.map((item, index) => ({
+    ...item,
+    cost: bundleEntries[index].DiscountedPrice ?? bundleEntries[index].BasePrice,
+    originalCost: bundleEntries[index].BasePrice,
+    discountPercent: bundleEntries[index].DiscountPercent,
+  }));
+  const bundlePage = featuredBundle ? {
+    embeds: makeBundleEmbeds(
+      bundle,
+      bundleItems,
+      featuredBundle.TotalDiscountedCost ?? featuredBundle.TotalBaseCost,
+      featuredBundle.TotalBaseCost,
+      featuredBundle.TotalDiscountPercent,
+      { endsAt: getBundleEndDate(featuredBundle, storefront.FeaturedBundle?.BundleRemainingDurationInSeconds) },
+    ),
+  } : null;
   const [dailyPage, accessoryPage, nightMarketPage] = [
     { embeds: makeItemEmbeds(dailyItems) },
     { embeds: makeItemEmbeds(accessories.map((accessory, index) => ({ ...accessory, cost: accessoryPrices.get(accessoryIds[index]) }))) },
@@ -299,7 +238,7 @@ export async function createStorePages(session, favoriteNames = []) {
   const pages = [
     dailyPage,
     accessoryPage,
-    ...bundlePages,
+    ...(bundlePage ? [bundlePage] : []),
   ];
   if (nightMarketPage) pages.push(nightMarketPage);
   return { pages, hasNightMarket: nightMarketDetails.length > 0, favoriteMatches, favoriteEmbeds };
