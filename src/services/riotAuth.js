@@ -11,7 +11,32 @@ import { CookieJar } from 'tough-cookie';
 
 const ALGO = 'aes-256-gcm';
 const QR_LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
+const CLIENT_VERSION_CACHE_TTL_MS = 15 * 60 * 1000;
 const pendingQrLogins = new Map();
+const clientVersionCache = new Map();
+
+async function getRiotClientVersion(shard) {
+  const region = String(shard ?? 'kr').toLowerCase();
+  const cached = clientVersionCache.get(region);
+  if (cached && Date.now() - cached.updatedAt < CLIENT_VERSION_CACHE_TTL_MS) return cached.version;
+
+  let version;
+  try {
+    const { data } = await axios.get(`https://api.henrikdev.xyz/valorant/v1/version/${region}`, {
+      headers: { Authorization: process.env.HENRIK_API_KEY },
+    });
+    version = data.data?.version_for_api;
+  } catch (error) {
+    console.warn(`Riot 클라이언트 지역 버전 조회 실패 (${region}): ${error.message}`);
+  }
+
+  if (!version) {
+    const { data } = await axios.get('https://valorant-api.com/v1/version');
+    version = data.data.riotClientVersion;
+  }
+  clientVersionCache.set(region, { version, updatedAt: Date.now() });
+  return version;
+}
 
 export function encryptCredential(plainText) {
   const key = Buffer.from(process.env.CREDENTIAL_ENCRYPTION_KEY, 'hex');
@@ -281,8 +306,7 @@ async function completeAuthorization(client, headers, authData) {
 }
 
 export async function getRiotDisplayName({ accessToken, entitlementsToken, puuid, shard }) {
-  const versionRes = await axios.get('https://valorant-api.com/v1/version');
-  const clientVersion = versionRes.data.data.riotClientVersion;
+  const clientVersion = await getRiotClientVersion(shard);
   const clientPlatform = Buffer.from(
     JSON.stringify({
       platformType: 'PC',
@@ -312,8 +336,7 @@ export async function getRiotDisplayName({ accessToken, entitlementsToken, puuid
 
 /** Fetch the raw storefront (bundle/offer UUIDs, not human names). */
 export async function getStorefront({ accessToken, entitlementsToken, puuid, shard }) {
-  const versionRes = await axios.get('https://valorant-api.com/v1/version');
-  const clientVersion = versionRes.data.data.riotClientVersion;
+  const clientVersion = await getRiotClientVersion(shard);
   const clientPlatform = Buffer.from(
     JSON.stringify({
       platformType: 'PC',
@@ -339,8 +362,7 @@ export async function getStorefront({ accessToken, entitlementsToken, puuid, sha
 }
 
 export async function getRiotContent({ accessToken, entitlementsToken, shard }) {
-  const versionRes = await axios.get('https://valorant-api.com/v1/version');
-  const clientVersion = versionRes.data.data.riotClientVersion;
+  const clientVersion = await getRiotClientVersion(shard);
   const clientPlatform = Buffer.from(
     JSON.stringify({
       platformType: 'PC',
