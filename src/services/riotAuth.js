@@ -56,6 +56,22 @@ async function getRiotClientVersion(shard) {
   return version;
 }
 
+async function requestWithCurrentClientVersion(shard, request) {
+  const region = String(shard ?? 'kr').toLowerCase();
+  const clientVersion = await getRiotClientVersion(region);
+  try {
+    return await request(clientVersion);
+  } catch (error) {
+    if (![400, 403].includes(error.response?.status)) throw error;
+
+    clientVersionCache.delete(region);
+    const refreshedVersion = await getRiotClientVersion(region);
+    if (refreshedVersion === clientVersion) throw error;
+    console.info(`Riot 클라이언트 버전 자동 갱신: ${clientVersion} -> ${refreshedVersion}`);
+    return request(refreshedVersion);
+  }
+}
+
 export function encryptCredential(plainText) {
   const key = Buffer.from(process.env.CREDENTIAL_ENCRYPTION_KEY, 'hex');
   const iv = crypto.randomBytes(12);
@@ -324,7 +340,6 @@ async function completeAuthorization(client, headers, authData) {
 }
 
 export async function getRiotDisplayName({ accessToken, entitlementsToken, puuid, shard }) {
-  const clientVersion = await getRiotClientVersion(shard);
   const clientPlatform = Buffer.from(
     JSON.stringify({
       platformType: 'PC',
@@ -334,7 +349,7 @@ export async function getRiotDisplayName({ accessToken, entitlementsToken, puuid
     })
   ).toString('base64');
 
-  const { data } = await axios.put(
+  const { data } = await requestWithCurrentClientVersion(shard, (clientVersion) => axios.put(
     `https://pd.${shard}.a.pvp.net/name-service/v2/players`,
     [puuid],
     {
@@ -345,7 +360,7 @@ export async function getRiotDisplayName({ accessToken, entitlementsToken, puuid
         'X-Riot-ClientPlatform': clientPlatform,
       },
     }
-  ).catch(throwMappedRiotAuthError);
+  )).catch(throwMappedRiotAuthError);
   const player = data?.[0];
   return player?.GameName && player?.TagLine
     ? { riotName: player.GameName, riotTag: player.TagLine }
@@ -354,7 +369,6 @@ export async function getRiotDisplayName({ accessToken, entitlementsToken, puuid
 
 /** Fetch the raw storefront (bundle/offer UUIDs, not human names). */
 export async function getStorefront({ accessToken, entitlementsToken, puuid, shard }) {
-  const clientVersion = await getRiotClientVersion(shard);
   const clientPlatform = Buffer.from(
     JSON.stringify({
       platformType: 'PC',
@@ -364,7 +378,7 @@ export async function getStorefront({ accessToken, entitlementsToken, puuid, sha
     })
   ).toString('base64');
 
-  const { data } = await axios.post(
+  const { data } = await requestWithCurrentClientVersion(shard, (clientVersion) => axios.post(
     `https://pd.${shard}.a.pvp.net/store/v3/storefront/${puuid}`,
     {},
     {
@@ -375,12 +389,11 @@ export async function getStorefront({ accessToken, entitlementsToken, puuid, sha
         'X-Riot-ClientVersion': clientVersion,
       },
     }
-  ).catch(throwMappedRiotAuthError);
+  )).catch(throwMappedRiotAuthError);
   return data;
 }
 
 export async function getRiotContent({ accessToken, entitlementsToken, shard }) {
-  const clientVersion = await getRiotClientVersion(shard);
   const clientPlatform = Buffer.from(
     JSON.stringify({
       platformType: 'PC',
@@ -390,7 +403,7 @@ export async function getRiotContent({ accessToken, entitlementsToken, shard }) 
     })
   ).toString('base64');
 
-  const { data } = await axios.get(
+  const { data } = await requestWithCurrentClientVersion(shard, (clientVersion) => axios.get(
     `https://shared.${shard}.a.pvp.net/content-service/v3/content`,
     {
       headers: {
@@ -400,7 +413,7 @@ export async function getRiotContent({ accessToken, entitlementsToken, shard }) 
         'X-Riot-ClientVersion': clientVersion,
       },
     }
-  ).catch(throwMappedRiotAuthError);
+  )).catch(throwMappedRiotAuthError);
   return data;
 }
 
@@ -471,11 +484,14 @@ function findContentItem(contents, itemId) {
 
 function getRiotContentName(item) {
   const localizedNames = item?.LocalizedNames ?? item?.localizedNames;
-  return localizedNames?.['ko-KR']
+  const name = localizedNames?.['ko-KR']
     ?? localizedNames?.ko_KR
     ?? item?.Name
     ?? item?.name
     ?? null;
+  return /^(warden|워든)(?:\s*(?:bundle|번들))?$/i.test(name?.trim() ?? '')
+    ? '2026 챔피언스'
+    : name;
 }
 
 function getRiotContentImage(item) {
