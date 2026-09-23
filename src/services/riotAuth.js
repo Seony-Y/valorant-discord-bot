@@ -407,12 +407,26 @@ export async function searchWeaponSkins(query = '') {
 
 function findRiotContentItem(content, itemId) {
   if (!content || !itemId) return null;
-  for (const value of Object.values(content)) {
-    if (!Array.isArray(value)) continue;
-    const item = value.find((entry) => (entry.ID ?? entry.id) === itemId);
-    if (item) return item;
+
+  const normalizedItemId = itemId.toLowerCase();
+  const pending = [content];
+  const visited = new Set();
+  while (pending.length) {
+    const value = pending.pop();
+    if (!value || typeof value !== 'object' || visited.has(value)) continue;
+    visited.add(value);
+
+    const id = value.ID ?? value.id ?? value.UUID ?? value.uuid;
+    if (typeof id === 'string' && id.toLowerCase() === normalizedItemId) return value;
+    pending.push(...Object.values(value).filter((entry) => entry && typeof entry === 'object'));
   }
   return null;
+}
+
+function findContentItem(contents, itemId) {
+  return (Array.isArray(contents) ? contents : [contents])
+    .map((content) => findRiotContentItem(content, itemId))
+    .find(Boolean);
 }
 
 function getRiotContentName(item) {
@@ -453,9 +467,7 @@ export async function resolveStoreItems(itemIds, riotContent = null) {
     const item = items.find(
       (entry) => entry.uuid === id || entry.levels?.some((level) => level.uuid === id) || entry.chromas?.some((chroma) => chroma.uuid === id)
     );
-    const riotItem = (Array.isArray(riotContent) ? riotContent : [riotContent])
-      .map((content) => findRiotContentItem(content, id))
-      .find(Boolean);
+    const riotItem = findContentItem(riotContent, id);
     const tier = tiers.find((entry) => entry.uuid === item?.contentTierUuid);
     return {
       name: item?.displayName ?? getRiotContentName(riotItem) ?? '이름 정보 확인 중',
@@ -466,22 +478,26 @@ export async function resolveStoreItems(itemIds, riotContent = null) {
   });
 }
 
-export async function resolveBundle(bundleId, alternateId = null, storefrontBundle = null) {
+export async function resolveBundle(bundleId, alternateId = null, storefrontBundle = null, riotContent = null) {
   if (!bundleId && !alternateId) return null;
   const { data } = await axios.get('https://valorant-api.com/v1/bundles?language=ko-KR');
   const bundle = data.data.find((entry) => entry.uuid === bundleId || entry.uuid === alternateId);
   if (!bundle) {
+    const riotBundle = findContentItem(riotContent, alternateId)
+      ?? findContentItem(riotContent, bundleId);
     const name = storefrontBundle?.DisplayName
       ?? storefrontBundle?.displayName
       ?? storefrontBundle?.Name
       ?? storefrontBundle?.name
+      ?? getRiotContentName(riotBundle)
       ?? '출시 예정 번들';
     const image = storefrontBundle?.DisplayIcon
       ?? storefrontBundle?.displayIcon
       ?? storefrontBundle?.Image
       ?? storefrontBundle?.image
       ?? storefrontBundle?.VerticalPromoImage
-      ?? storefrontBundle?.verticalPromoImage;
+      ?? storefrontBundle?.verticalPromoImage
+      ?? getRiotContentImage(riotBundle);
     return {
       name,
       image: typeof image === 'string' && /^https?:\/\//i.test(image) ? image : null,

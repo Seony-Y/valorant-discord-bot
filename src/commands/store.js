@@ -259,7 +259,7 @@ export async function createStorePages(session, favoriteNames = []) {
     Promise.all(bundleEntries.map(async ({ source, startsAt, endsAt }) => {
       const itemEntries = getBundleItemEntries(source);
       const [bundle, contents] = await Promise.all([
-        resolveBundle(source.ID, source.DataAssetID, source),
+        resolveBundle(source.ID, source.DataAssetID, source, currentContent),
         resolveStoreItems(itemEntries.map(({ Item }) => Item.ItemID), currentContent),
       ]);
       const items = contents.map((item, index) => ({
