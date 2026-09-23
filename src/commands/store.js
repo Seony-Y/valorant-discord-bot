@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import {
   decryptCredential,
   encryptCredential,
+  getRiotContent,
   getStorefront,
   getRiotDisplayName,
   restoreRiotStoreSession,
@@ -113,13 +114,21 @@ function makeBundleEmbeds(bundle, items, cost, originalCost, discountPercent, sc
   const price = hasDiscountedPrice
     ? `${strikeText(formatPrice(originalCost))} ${formatPrice(cost)} (${discount})`
     : discount && hasPrice(cost) ? `${formatPrice(cost)} (${discount})` : hasPrice(cost) ? formatPrice(cost) : '';
-  const summary = new EmbedBuilder().setTitle(bundle.name).setColor(0xff4655);
-  if (bundle.image) summary.setImage(bundle.image);
+  const resolvedItem = items.find((item) => item.name !== '이름 정보 확인 중');
+  const title = bundle.name === '출시 예정 번들' && resolvedItem
+    ? `${resolvedItem.name} 외 번들`
+    : bundle.name;
+  const summary = new EmbedBuilder().setTitle(title).setColor(0xff4655);
+  const image = bundle.image ?? items.find((item) => item.image)?.image;
+  if (image) summary.setImage(image);
   if (price) {
     summary.setFooter({ text: price, iconURL: 'attachment://vp_img.webp' });
   }
   if (schedule.endsAt) {
     summary.addFields({ name: '판매 종료일', value: formatKst(schedule.endsAt), inline: false });
+  }
+  if (schedule.startsAt) {
+    summary.addFields({ name: '판매 시작일', value: formatKst(schedule.startsAt), inline: false });
   }
   return [summary, ...makeItemEmbeds(items)].slice(0, 10);
 }
@@ -157,6 +166,33 @@ function getBundleEndDate(bundle, fallbackDuration = null) {
     : null;
 }
 
+function getBundleStartDate(bundle) {
+  const values = [
+    bundle?.StartDate,
+    bundle?.BundleStartDate,
+    ...(bundle?.ItemOffers ?? []).map((entry) => entry.Offer?.StartDate ?? entry.StartDate),
+    ...(bundle?.Items ?? []).map((entry) => entry.Offer?.StartDate ?? entry.StartDate),
+  ];
+  const dates = values
+    .map((value) => new Date(value))
+    .filter((date) => Number.isFinite(date.getTime()) && date.getUTCFullYear() >= 2020)
+    .sort((left, right) => left - right);
+  return dates[0] ?? null;
+}
+
+function getBundleItemEntries(bundle) {
+  const entries = (bundle?.Items ?? []).filter(({ Item }) => Item?.ItemID);
+  if (entries.length) return entries;
+  return (bundle?.ItemOffers ?? []).flatMap((entry) =>
+    (entry.Offer?.Rewards ?? []).filter((reward) => reward?.ItemID).map((reward) => ({
+      Item: reward,
+      BasePrice: getPriceNumber(entry.Offer?.Cost),
+      DiscountedPrice: getPriceNumber(entry.DiscountedCost ?? entry.Offer?.Cost),
+      DiscountPercent: entry.DiscountPercent,
+    }))
+  );
+}
+
 function buildViewPayload(view) {
   const page = view.pages[view.index];
   const row = new ActionRowBuilder().addComponents(
@@ -185,42 +221,63 @@ function buildViewPayload(view) {
 }
 
 export async function createStorePages(session, favoriteNames = []) {
-  const storefront = await getStorefront(session);
+  const [storefront, riotContent] = await Promise.all([
+    getStorefront(session),
+    getRiotContent(session).catch((error) => {
+      console.warn(`Riot 콘텐츠 조회 실패: ${error.message}`);
+      return null;
+    }),
+  ]);
   const offerIds = storefront.SkinsPanelLayout.SingleItemOffers;
   const dailyOffers = storefront.SkinsPanelLayout.SingleItemStoreOffers ?? [];
   const accessoryOffers = storefront.AccessoryStore?.AccessoryStoreOffers ?? [];
   const accessoryIds = getAccessoryItemIds(storefront);
   const nightMarketDetails = getNightMarketOfferDetails(storefront);
   const featuredBundle = storefront.FeaturedBundle?.Bundle;
-  const bundleEntries = (featuredBundle?.Items ?? []).filter(({ Item }) => Item?.ItemID);
-  const bundleItemIds = bundleEntries.map(({ Item }) => Item.ItemID);
-  const [offers, accessories, bundle, bundleContents, nightMarketOffers] = await Promise.all([
+  const featuredBundleId = featuredBundle?.ID ?? featuredBundle?.DataAssetID;
+  const upcomingBundles = (storefront.FeaturedBundle?.Bundles ?? [])
+    .filter((entry) => (entry.ID ?? entry.DataAssetID) !== featuredBundleId)
+    .sort((left, right) => (getBundleStartDate(left)?.getTime() ?? Infinity) - (getBundleStartDate(right)?.getTime() ?? Infinity));
+  const bundleEntries = [
+    ...(featuredBundle ? [{
+      source: featuredBundle,
+      startsAt: null,
+      endsAt: getBundleEndDate(featuredBundle, storefront.FeaturedBundle?.BundleRemainingDurationInSeconds),
+    }] : []),
+    ...upcomingBundles.map((source) => ({ source, startsAt: getBundleStartDate(source), endsAt: null })),
+  ];
+  const [offers, accessories, nightMarketOffers, bundlePages] = await Promise.all([
     resolveSkinOffers(offerIds),
-    resolveStoreItems(accessoryIds),
-    resolveBundle(featuredBundle?.ID, featuredBundle?.DataAssetID),
-    resolveStoreItems(bundleItemIds),
+    resolveStoreItems(accessoryIds, riotContent),
     resolveSkinOffers(nightMarketDetails.map(({ itemId }) => itemId)),
+    Promise.all(bundleEntries.map(async ({ source, startsAt, endsAt }) => {
+      const itemEntries = getBundleItemEntries(source);
+      const [bundle, contents] = await Promise.all([
+        resolveBundle(source.ID, source.DataAssetID, source),
+        resolveStoreItems(itemEntries.map(({ Item }) => Item.ItemID), riotContent),
+      ]);
+      const items = contents.map((item, index) => ({
+        ...item,
+        cost: itemEntries[index].DiscountedPrice ?? itemEntries[index].BasePrice,
+        originalCost: itemEntries[index].BasePrice,
+        discountPercent: itemEntries[index].DiscountPercent,
+      }));
+      return {
+        embeds: makeBundleEmbeds(
+          bundle,
+          items,
+          source.TotalDiscountedCost ?? source.TotalBaseCost,
+          source.TotalBaseCost,
+          source.TotalDiscountPercent,
+          { startsAt, endsAt },
+        ),
+      };
+    })),
   ]);
   const dailyPrices = getPriceByRewardId(dailyOffers);
   const accessoryPrices = getPriceByRewardId(accessoryOffers);
 
   const dailyItems = offers.map((offer, index) => ({ ...offer, cost: dailyPrices.get(offerIds[index]) }));
-  const bundleItems = bundleContents.map((item, index) => ({
-    ...item,
-    cost: bundleEntries[index].DiscountedPrice ?? bundleEntries[index].BasePrice,
-    originalCost: bundleEntries[index].BasePrice,
-    discountPercent: bundleEntries[index].DiscountPercent,
-  }));
-  const bundlePage = featuredBundle ? {
-    embeds: makeBundleEmbeds(
-      bundle,
-      bundleItems,
-      featuredBundle.TotalDiscountedCost ?? featuredBundle.TotalBaseCost,
-      featuredBundle.TotalBaseCost,
-      featuredBundle.TotalDiscountPercent,
-      { endsAt: getBundleEndDate(featuredBundle, storefront.FeaturedBundle?.BundleRemainingDurationInSeconds) },
-    ),
-  } : null;
   const [dailyPage, accessoryPage, nightMarketPage] = [
     { embeds: makeItemEmbeds(dailyItems) },
     { embeds: makeItemEmbeds(accessories.map((accessory, index) => ({ ...accessory, cost: accessoryPrices.get(accessoryIds[index]) }))) },
@@ -238,7 +295,7 @@ export async function createStorePages(session, favoriteNames = []) {
   const pages = [
     dailyPage,
     accessoryPage,
-    ...(bundlePage ? [bundlePage] : []),
+    ...bundlePages,
   ];
   if (nightMarketPage) pages.push(nightMarketPage);
   return { pages, hasNightMarket: nightMarketDetails.length > 0, favoriteMatches, favoriteEmbeds };

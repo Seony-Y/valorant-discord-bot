@@ -338,6 +338,32 @@ export async function getStorefront({ accessToken, entitlementsToken, puuid, sha
   return data;
 }
 
+export async function getRiotContent({ accessToken, entitlementsToken, shard }) {
+  const versionRes = await axios.get('https://valorant-api.com/v1/version');
+  const clientVersion = versionRes.data.data.riotClientVersion;
+  const clientPlatform = Buffer.from(
+    JSON.stringify({
+      platformType: 'PC',
+      platformOS: 'Windows',
+      platformOSVersion: '10.0.19042.1.256.64bit',
+      platformChipset: 'Unknown',
+    })
+  ).toString('base64');
+
+  const { data } = await axios.get(
+    `https://shared.${shard}.a.pvp.net/content-service/v3/content`,
+    {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'X-Riot-Entitlements-JWT': entitlementsToken,
+        'X-Riot-ClientPlatform': clientPlatform,
+        'X-Riot-ClientVersion': clientVersion,
+      },
+    }
+  ).catch(throwMappedRiotAuthError);
+  return data;
+}
+
 function resolveSkinImage(skin, itemId = null) {
   const level = skin?.levels?.find((entry) => entry.uuid === itemId);
   const chroma = skin?.chromas?.find((entry) => entry.uuid === itemId);
@@ -379,7 +405,36 @@ export async function searchWeaponSkins(query = '') {
     .map((skin) => ({ name: skin.displayName, image: resolveSkinImage(skin) }));
 }
 
-export async function resolveStoreItems(itemIds) {
+function findRiotContentItem(content, itemId) {
+  if (!content || !itemId) return null;
+  for (const value of Object.values(content)) {
+    if (!Array.isArray(value)) continue;
+    const item = value.find((entry) => (entry.ID ?? entry.id) === itemId);
+    if (item) return item;
+  }
+  return null;
+}
+
+function getRiotContentName(item) {
+  const localizedNames = item?.LocalizedNames ?? item?.localizedNames;
+  return localizedNames?.['ko-KR']
+    ?? localizedNames?.ko_KR
+    ?? item?.Name
+    ?? item?.name
+    ?? null;
+}
+
+function getRiotContentImage(item) {
+  const image = item?.DisplayIcon
+    ?? item?.displayIcon
+    ?? item?.Icon
+    ?? item?.icon
+    ?? item?.Image
+    ?? item?.image;
+  return typeof image === 'string' && /^https?:\/\//i.test(image) ? image : null;
+}
+
+export async function resolveStoreItems(itemIds, riotContent = null) {
   const endpoints = [
     'weapons/skins',
     'contenttiers',
@@ -398,21 +453,38 @@ export async function resolveStoreItems(itemIds) {
     const item = items.find(
       (entry) => entry.uuid === id || entry.levels?.some((level) => level.uuid === id) || entry.chromas?.some((chroma) => chroma.uuid === id)
     );
+    const riotItem = findRiotContentItem(riotContent, id);
     const tier = tiers.find((entry) => entry.uuid === item?.contentTierUuid);
     return {
-      name: item?.displayName ?? id,
-      image: resolveSkinImage(item, id) ?? item?.fullIcon ?? item?.largeArt ?? item?.wideArt ?? null,
+      name: item?.displayName ?? getRiotContentName(riotItem) ?? '이름 정보 확인 중',
+      image: resolveSkinImage(item, id) ?? item?.fullIcon ?? item?.largeArt ?? item?.wideArt ?? getRiotContentImage(riotItem),
       tierImage: tier?.displayIcon ?? null,
       tierName: tier?.displayName ?? '콘텐츠 티어',
     };
   });
 }
 
-export async function resolveBundle(bundleId, alternateId = null) {
+export async function resolveBundle(bundleId, alternateId = null, storefrontBundle = null) {
   if (!bundleId && !alternateId) return null;
   const { data } = await axios.get('https://valorant-api.com/v1/bundles?language=ko-KR');
   const bundle = data.data.find((entry) => entry.uuid === bundleId || entry.uuid === alternateId);
-  if (!bundle) return { name: bundleId ?? alternateId, image: null };
+  if (!bundle) {
+    const name = storefrontBundle?.DisplayName
+      ?? storefrontBundle?.displayName
+      ?? storefrontBundle?.Name
+      ?? storefrontBundle?.name
+      ?? '출시 예정 번들';
+    const image = storefrontBundle?.DisplayIcon
+      ?? storefrontBundle?.displayIcon
+      ?? storefrontBundle?.Image
+      ?? storefrontBundle?.image
+      ?? storefrontBundle?.VerticalPromoImage
+      ?? storefrontBundle?.verticalPromoImage;
+    return {
+      name,
+      image: typeof image === 'string' && /^https?:\/\//i.test(image) ? image : null,
+    };
+  }
   return {
     name: bundle.displayName,
     image: bundle.displayIcon ?? bundle.verticalPromoImage ?? null,
