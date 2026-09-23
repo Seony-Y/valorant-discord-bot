@@ -470,7 +470,7 @@ function getRiotContentImage(item) {
   return typeof image === 'string' && /^https?:\/\//i.test(image) ? image : null;
 }
 
-export async function resolveStoreItems(itemIds, riotContent = null) {
+export async function resolveStoreItems(itemIds, riotContent = null, itemTypes = []) {
   const endpoints = [
     'weapons/skins',
     'contenttiers',
@@ -485,12 +485,18 @@ export async function resolveStoreItems(itemIds, riotContent = null) {
   const items = responses.flatMap((response) => response.data.data);
   const tiers = responses[1].data.data;
 
-  return itemIds.map((id) => {
+  return itemIds.map((id, index) => {
     const item = items.find(
       (entry) => entry.uuid === id || entry.levels?.some((level) => level.uuid === id) || entry.chromas?.some((chroma) => chroma.uuid === id)
     );
     const riotItem = findContentItem(riotContent, id);
     const tier = tiers.find((entry) => entry.uuid === item?.contentTierUuid);
+    if (!item && !riotItem) {
+      console.warn('[store-metadata] unresolved item', {
+        itemId: id,
+        itemTypeId: itemTypes[index] ?? null,
+      });
+    }
     return {
       name: item?.displayName ?? getRiotContentName(riotItem) ?? '이름 정보 확인 중',
       image: resolveSkinImage(item, id) ?? item?.fullIcon ?? item?.largeArt ?? item?.wideArt ?? getRiotContentImage(riotItem),
@@ -520,6 +526,9 @@ export async function resolveBundle(bundleId, alternateId = null, storefrontBund
       ?? storefrontBundle?.VerticalPromoImage
       ?? storefrontBundle?.verticalPromoImage
       ?? getRiotContentImage(riotBundle);
+    if (!riotBundle && name === '출시 예정 번들') {
+      console.warn('[store-metadata] unresolved bundle', { bundleId, dataAssetId: alternateId });
+    }
     return {
       name,
       image: typeof image === 'string' && /^https?:\/\//i.test(image) ? image : null,

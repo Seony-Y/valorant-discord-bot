@@ -225,7 +225,10 @@ export async function createStorePages(session, favoriteNames = []) {
   const [storefront, riotContent, henrikContent] = await Promise.all([
     getStorefront(session),
     getRiotContent(session).catch((error) => {
-      console.warn(`Riot 콘텐츠 조회 실패: ${error.message}`);
+      console.warn('Riot 콘텐츠 조회 실패:', {
+        message: error.message,
+        status: error.response?.status ?? null,
+      });
       return null;
     }),
     getValorantContent().catch((error) => {
@@ -234,6 +237,10 @@ export async function createStorePages(session, favoriteNames = []) {
     }),
   ]);
   const currentContent = [riotContent, henrikContent].filter(Boolean);
+  console.info('[store-metadata] content sources', {
+    riot: riotContent?.Version ?? riotContent?.version ?? (riotContent ? 'loaded' : null),
+    henrik: henrikContent?.version ?? (henrikContent ? 'loaded' : null),
+  });
   const offerIds = storefront.SkinsPanelLayout.SingleItemOffers;
   const dailyOffers = storefront.SkinsPanelLayout.SingleItemStoreOffers ?? [];
   const accessoryOffers = storefront.AccessoryStore?.AccessoryStoreOffers ?? [];
@@ -260,7 +267,11 @@ export async function createStorePages(session, favoriteNames = []) {
       const itemEntries = getBundleItemEntries(source);
       const [bundle, contents] = await Promise.all([
         resolveBundle(source.ID, source.DataAssetID, source, currentContent),
-        resolveStoreItems(itemEntries.map(({ Item }) => Item.ItemID), currentContent),
+        resolveStoreItems(
+          itemEntries.map(({ Item }) => Item.ItemID),
+          currentContent,
+          itemEntries.map(({ Item }) => Item.ItemTypeID),
+        ),
       ]);
       const items = contents.map((item, index) => ({
         ...item,
