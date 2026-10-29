@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import './validateEnv.js';
 import { Client, Collection, GatewayIntentBits, MessageFlags } from 'discord.js';
 import { readdirSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -81,6 +82,29 @@ client.on('interactionCreate', async (interaction) => {
     }
   }
 });
+
+client.on('error', (error) => console.error('Discord 클라이언트 오류:', error));
+
+// Async handlers outside interactionCreate (collectors, timers) can reject unobserved; log instead of letting Node kill
+// the process and drop in-memory state such as open team lobbies, store views and pending QR logins.
+process.on('unhandledRejection', (reason) => {
+  if (reason?.code === 10062 || reason?.code === 40060) return;
+  console.error('처리되지 않은 비동기 오류:', reason);
+});
+
+let shuttingDown = false;
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`${signal} 수신, 봇을 종료합니다.`);
+  try {
+    await client.destroy();
+  } finally {
+    process.exit(0);
+  }
+}
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 try {
   await getValorantActs();

@@ -1,5 +1,5 @@
 import { MessageFlags, SlashCommandBuilder } from 'discord.js';
-import { requireServerManager } from '../services/admin.js';
+import { requireBotOwner } from '../services/admin.js';
 import { supabase } from '../services/supabase.js';
 
 export const data = new SlashCommandBuilder()
@@ -7,7 +7,7 @@ export const data = new SlashCommandBuilder()
   .setDescription('봇과 주요 데이터 저장소 상태를 확인합니다.');
 
 export async function execute(interaction) {
-  const permissionError = requireServerManager(interaction);
+  const permissionError = requireBotOwner(interaction);
   if (permissionError) {
     await interaction.reply({ content: permissionError, flags: MessageFlags.Ephemeral });
     return;

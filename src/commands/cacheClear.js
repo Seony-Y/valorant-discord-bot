@@ -1,5 +1,5 @@
 import { MessageFlags, SlashCommandBuilder } from 'discord.js';
-import { requireServerManager } from '../services/admin.js';
+import { requireBotOwner } from '../services/admin.js';
 import { supabase } from '../services/supabase.js';
 
 export const data = new SlashCommandBuilder()
@@ -7,7 +7,7 @@ export const data = new SlashCommandBuilder()
   .setDescription('전적 파워 스코어 캐시를 전체 삭제합니다.');
 
 export async function execute(interaction) {
-  const permissionError = requireServerManager(interaction);
+  const permissionError = requireBotOwner(interaction);
   if (permissionError) {
     await interaction.reply({ content: permissionError, flags: MessageFlags.Ephemeral });
     return;
