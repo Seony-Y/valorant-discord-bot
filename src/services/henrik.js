@@ -197,31 +197,6 @@ export async function getSeasonMatchDetails(region, name, tag, seasonId) {
   return matchDetails;
 }
 
-/** Pull only the fields needed for team balancing: KDA + ACS. */
-export async function getPowerMatchSummary(region, name, tag, size = 20) {
-  const matches = await getMatches(region, name, tag, size);
-
-  let kills = 0, deaths = 0, assists = 0, totalScore = 0, totalRounds = 0, gamesConsidered = 0;
-  for (const match of matches) {
-    const me = match.players?.all_players?.find((p) => p.name === name && p.tag === tag);
-    if (!me) continue;
-
-    kills += me.stats?.kills ?? 0;
-    deaths += me.stats?.deaths ?? 0;
-    assists += me.stats?.assists ?? 0;
-    totalScore += me.stats?.score ?? 0;
-    totalRounds += match.metadata?.rounds_played ?? match.rounds?.length ?? 0;
-    gamesConsidered += 1;
-  }
-
-  const kda = deaths === 0 ? kills + assists : (kills + assists) / deaths;
-  return {
-    kda: Number(kda.toFixed(2)),
-    acs: totalRounds ? Math.round(totalScore / totalRounds) : 0,
-    gamesConsidered,
-  };
-}
-
 /** Pull the last 10 competitive or unrated matches and derive match statistics. */
 function normalizeAbilityCasts(abilityCasts = {}) {
   const normalized = { q: 0, c: 0, e: 0, x: 0 };

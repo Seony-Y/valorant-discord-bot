@@ -1,10 +1,11 @@
-import { getMMR, getPowerMatchSummary } from './henrik.js';
+import { getMMR, getMatchSummary } from './henrik.js';
 import { computePowerScore } from './scoring.js';
 import { supabase } from './supabase.js';
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
-const SCORE_VERSION_UPDATED_AT = new Date('2026-09-08T02:00:00.000Z').getTime();
-const MATCH_LOOKUP_SIZES = [20, 50, 100];
+const SCORE_VERSION_UPDATED_AT = new Date('2026-10-29T00:00:00.000Z').getTime();
+export const MATCH_LOOKUP_SIZES = [20, 50, 100];
+export const MATCHES_TO_CONSIDER = 10;
 
 async function retryRateLimited(operation) {
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -19,19 +20,41 @@ async function retryRateLimited(operation) {
   }
 }
 
-async function getLatestAvailableMatchSummary(region, name, tag) {
+/**
+ * Latest competitive/unrated match summary (deathmatch-style modes would skew ACS/KDA).
+ * Widens the lookup until MATCHES_TO_CONSIDER games are found, else returns the widest partial result.
+ */
+export async function getLatestAvailableMatchSummary(region, name, tag) {
   let lastError;
+  let partialSummary;
   for (const size of MATCH_LOOKUP_SIZES) {
     try {
-      const summary = await retryRateLimited(() => getPowerMatchSummary(region, name, tag, size));
-      if (summary.gamesConsidered > 0) return summary;
+      const summary = await retryRateLimited(() => getMatchSummary(region, name, tag, size));
+      if (summary.gamesConsidered >= MATCHES_TO_CONSIDER) return summary;
+      if (summary.gamesConsidered > 0) partialSummary = summary;
     } catch (error) {
       lastError = error;
       if (error?.response?.status && error.response.status !== 404 && error.response.status !== 429) throw error;
     }
-    await sleep(1_000);
+    if (size !== MATCH_LOOKUP_SIZES.at(-1)) await sleep(1_000);
   }
+  if (partialSummary) return partialSummary;
   throw lastError ?? new Error('조회 가능한 최근 매치 기록이 없습니다.');
+}
+
+export async function savePowerScoreCache(discordId, { mmr, matchSummary, powerScore }) {
+  const { error } = await supabase.from('stats_cache').upsert({
+    discord_id: discordId,
+    kda: matchSummary.kda,
+    acs: matchSummary.acs,
+    top_agents: matchSummary.topAgents,
+    map_winrates: matchSummary.mapWinrates,
+    current_tier: mmr.currentTier,
+    peak_tier: mmr.peakTier,
+    power_score: powerScore,
+    updated_at: new Date().toISOString(),
+  });
+  if (error) console.error(`전적 캐시 저장 실패 (${discordId}): ${error.message}`);
 }
 
 export async function getOrRefreshPowerScore(discordUser) {
@@ -91,16 +114,7 @@ export async function getOrRefreshPowerScore(discordUser) {
     peakTier: mmr.peakTier,
   });
 
-  await supabase.from('stats_cache').upsert({
-    discord_id: discordUser.id,
-    kda: matchSummary.kda,
-    top_agents: matchSummary.topAgents,
-    map_winrates: matchSummary.mapWinrates,
-    current_tier: mmr.currentTier,
-    peak_tier: mmr.peakTier,
-    power_score: powerScore,
-    updated_at: new Date().toISOString(),
-  });
+  await savePowerScoreCache(discordUser.id, { mmr, matchSummary, powerScore });
 
   return {
     id: discordUser.id,

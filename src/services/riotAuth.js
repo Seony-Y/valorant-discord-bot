@@ -8,6 +8,7 @@ import axios from 'axios';
 import crypto from 'node:crypto';
 import { wrapper } from 'axios-cookiejar-support';
 import { CookieJar } from 'tough-cookie';
+import { getValorantAssets } from './valorantAssets.js';
 
 const ALGO = 'aes-256-gcm';
 const QR_LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
@@ -256,9 +257,18 @@ export async function checkRiotQrLogin(id) {
     throw new Error('QR 로그인 시간이 만료되었습니다. `/상점연동`을 다시 실행해주세요.');
   }
 
-  const { data } = await pending.client.get('https://authenticate.riotgames.com/api/v1/login', {
-    headers: qrHeaders(pending.sdkSid, pending.countryCode),
-  });
+  let data;
+  try {
+    ({ data } = await pending.client.get('https://authenticate.riotgames.com/api/v1/login', {
+      headers: qrHeaders(pending.sdkSid, pending.countryCode),
+      timeout: 10_000,
+    }));
+  } catch (error) {
+    // A network blip or Riot hiccup while waiting for the scan shouldn't abort the login; the QR expiry still bounds retries.
+    const status = error.response?.status;
+    if (!status || status === 429 || status >= 500) return null;
+    throw error;
+  }
   if (data.type !== 'success') return null;
 
   pendingQrLogins.delete(id);
@@ -431,15 +441,10 @@ function resolveSkinImage(skin, itemId = null) {
 
 /** Map skin panel offer UUIDs to display metadata via valorant-api.com. */
 export async function resolveSkinOffers(offerIds) {
-  const [skinsResponse, tiersResponse] = await Promise.all([
-    axios.get('https://valorant-api.com/v1/weapons/skins?language=ko-KR'),
-    axios.get('https://valorant-api.com/v1/contenttiers?language=ko-KR'),
-  ]);
-  const skins = skinsResponse.data.data;
-  const tiers = tiersResponse.data.data;
+  const { itemsById, tiersById } = await getValorantAssets();
   return offerIds.map((id) => {
-    const skin = skins.find((s) => s.levels?.some((l) => l.uuid === id) || s.chromas?.some((c) => c.uuid === id));
-    const tier = tiers.find((entry) => entry.uuid === skin?.contentTierUuid);
+    const skin = itemsById.get(id);
+    const tier = tiersById.get(skin?.contentTierUuid);
     return {
       name: skin?.displayName ?? id,
       image: resolveSkinImage(skin, id),
@@ -450,9 +455,9 @@ export async function resolveSkinOffers(offerIds) {
 }
 
 export async function searchWeaponSkins(query = '') {
-  const { data } = await axios.get('https://valorant-api.com/v1/weapons/skins?language=ko-KR');
+  const { skins } = await getValorantAssets();
   const normalizedQuery = query.trim().toLocaleLowerCase('ko-KR');
-  return data.data
+  return skins
     .filter((skin) => skin.displayName?.toLocaleLowerCase('ko-KR').includes(normalizedQuery))
     .slice(0, 25)
     .map((skin) => ({ name: skin.displayName, image: resolveSkinImage(skin) }));
@@ -505,26 +510,12 @@ function getRiotContentImage(item) {
 }
 
 export async function resolveStoreItems(itemIds, riotContent = null, itemTypes = []) {
-  const endpoints = [
-    'weapons/skins',
-    'contenttiers',
-    'buddies',
-    'playercards',
-    'sprays',
-    'flex',
-  ];
-  const responses = await Promise.all(
-    endpoints.map((endpoint) => axios.get(`https://valorant-api.com/v1/${endpoint}?language=ko-KR`))
-  );
-  const items = responses.flatMap((response) => response.data.data);
-  const tiers = responses[1].data.data;
+  const { itemsById, tiersById } = await getValorantAssets();
 
   return Promise.all(itemIds.map(async (id, index) => {
-    const item = items.find(
-      (entry) => entry.uuid === id || entry.levels?.some((level) => level.uuid === id) || entry.chromas?.some((chroma) => chroma.uuid === id)
-    );
+    const item = itemsById.get(id);
     const riotItem = findContentItem(riotContent, id);
-    const tier = tiers.find((entry) => entry.uuid === item?.contentTierUuid);
+    const tier = tiersById.get(item?.contentTierUuid);
     const knownImage = resolveSkinImage(item, id)
       ?? item?.fullIcon
       ?? item?.largeArt
@@ -551,8 +542,8 @@ export async function resolveStoreItems(itemIds, riotContent = null, itemTypes =
 
 export async function resolveBundle(bundleId, alternateId = null, storefrontBundle = null, riotContent = null) {
   if (!bundleId && !alternateId) return null;
-  const { data } = await axios.get('https://valorant-api.com/v1/bundles?language=ko-KR');
-  const bundle = data.data.find((entry) => entry.uuid === bundleId || entry.uuid === alternateId);
+  const { bundlesById } = await getValorantAssets();
+  const bundle = bundlesById.get(bundleId) ?? bundlesById.get(alternateId);
   if (!bundle) {
     const riotBundle = findContentItem(riotContent, alternateId)
       ?? findContentItem(riotContent, bundleId);

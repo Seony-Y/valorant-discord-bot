@@ -39,7 +39,12 @@ create table if not exists store_notifications (
   last_sent_on date,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  primary key (discord_id, account_name)
+  primary key (discord_id, account_name),
+  constraint store_notifications_account_fkey
+    foreign key (discord_id, account_name)
+    references riot_store_sessions (discord_id, account_name)
+    on update cascade
+    on delete cascade
 );
 
 create table if not exists store_favorites (
@@ -81,6 +86,7 @@ create table if not exists valorant_news_deliveries (
 create table if not exists stats_cache (
   discord_id text primary key references players(discord_id) on delete cascade,
   kda numeric,
+  acs numeric,
   top_agents jsonb,       -- [{ agent, playRate, winRate }, ...] (TOP5)
   map_winrates jsonb,     -- { mapName: winRate, ... }
   current_tier text,

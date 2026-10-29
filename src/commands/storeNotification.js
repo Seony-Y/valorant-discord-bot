@@ -1,6 +1,7 @@
 import { MessageFlags, SlashCommandBuilder } from 'discord.js';
 import { supabase } from '../services/supabase.js';
 import { autocompleteStoreAccount } from '../services/storeAccounts.js';
+import { formatKstDate, getKstDateParts, toMinuteOfDay } from '../services/kstTime.js';
 
 export const data = new SlashCommandBuilder()
   .setName('상점알림')
@@ -109,6 +110,9 @@ export async function execute(interaction) {
     return;
   }
 
+  // The scheduler sends any notification whose time has passed today, so a time already past starts tomorrow.
+  const now = getKstDateParts();
+  const alreadyPassedToday = toMinuteOfDay(hour, minute) <= toMinuteOfDay(now.hour, now.minute);
   const { error } = await supabase
     .from('store_notifications')
     .upsert({
@@ -117,7 +121,7 @@ export async function execute(interaction) {
       hour,
       minute,
       enabled: true,
-      last_sent_on: null,
+      last_sent_on: alreadyPassedToday ? formatKstDate(now) : null,
       updated_at: new Date().toISOString(),
     }, { onConflict: 'discord_id,account_name' });
   if (error) {

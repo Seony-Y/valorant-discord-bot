@@ -6,28 +6,15 @@ import {
   SlashCommandBuilder,
   EmbedBuilder,
 } from 'discord.js';
-import { getMMR, getMatchSummary, getSeasonMatchDetails, getValorantActs } from '../services/henrik.js';
+import { getMMR, getSeasonMatchDetails, getValorantActs } from '../services/henrik.js';
 import { computePowerScore } from '../services/scoring.js';
 import { supabase } from '../services/supabase.js';
-
-const MATCH_LOOKUP_SIZES = [20, 50, 100];
-const MATCHES_TO_CONSIDER = 10;
-
-async function getLatestAvailableMatchSummary(region, name, tag) {
-  let lastError;
-  for (const size of MATCH_LOOKUP_SIZES) {
-    try {
-      const summary = await getMatchSummary(region, name, tag, size);
-      if (summary.gamesConsidered >= MATCHES_TO_CONSIDER || (size === MATCH_LOOKUP_SIZES.at(-1) && summary.gamesConsidered > 0)) {
-        return summary;
-      }
-    } catch (error) {
-      lastError = error;
-      if (error?.response?.status && error.response.status !== 404) throw error;
-    }
-  }
-  throw lastError ?? new Error('조회 가능한 최근 매치 기록이 없습니다.');
-}
+import {
+  getLatestAvailableMatchSummary,
+  MATCH_LOOKUP_SIZES,
+  MATCHES_TO_CONSIDER,
+  savePowerScoreCache,
+} from '../services/teamPower.js';
 
 async function showSeasonMatchDetails(interaction, player, seasonId) {
   const [seasonMatches, acts] = await Promise.all([
@@ -242,16 +229,7 @@ export async function execute(interaction) {
       : null;
 
     if (isOwnAccount && mmr && matchSummary) {
-      await supabase.from('stats_cache').upsert({
-        discord_id: interaction.user.id,
-        kda: matchSummary.kda,
-        top_agents: matchSummary.topAgents,
-        map_winrates: matchSummary.mapWinrates,
-        current_tier: mmr.currentTier,
-        peak_tier: mmr.peakTier,
-        power_score: powerScore,
-        updated_at: new Date().toISOString(),
-      });
+      await savePowerScoreCache(interaction.user.id, { mmr, matchSummary, powerScore });
     }
 
     const agentLines = matchSummary?.topAgents?.length

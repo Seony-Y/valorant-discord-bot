@@ -3,30 +3,17 @@ import { supabase } from './supabase.js';
 import { AttachmentBuilder } from 'discord.js';
 import { createStorePages, VALORANT_POINTS_IMAGE } from '../commands/store.js';
 import { persistRotatedSsid } from './storeAccounts.js';
+import { formatKstDate, getKstDate, getKstDateParts, toMinuteOfDay } from './kstTime.js';
 
 const NOTIFICATION_INTERVAL_MS = 60 * 1000;
 const RIOT_MAINTENANCE_RETRY_MS = 15 * 60 * 1000;
+const STORE_NOTIFICATION_RETRY_MS = 15 * 60 * 1000;
+const DISCORD_CANNOT_DM_USER = 50007;
 let notificationTimer;
+let storeNotificationRunning = false;
+const storeNotificationRetryAfter = new Map();
 let favoriteRefreshRunning = false;
 let favoriteRefreshRetryAfter = 0;
-
-function getKstDateParts(date = new Date()) {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Seoul',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23',
-  }).formatToParts(date);
-  return Object.fromEntries(parts.filter(({ type }) => type !== 'literal').map(({ type, value }) => [type, Number(value)]));
-}
-
-function getKstDate(date = new Date()) {
-  const { year, month, day } = getKstDateParts(date);
-  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-}
 
 async function getFavoriteMatches(discordId, account, favoriteNames) {
   const ssid = decryptCredential({ encrypted: account.encrypted_ssid, iv: account.iv, authTag: account.auth_tag });
@@ -150,28 +137,38 @@ async function sendStoreNotification(client, notification) {
   }
 }
 
+async function markStoreNotificationSent(notification, today) {
+  const { error } = await supabase
+    .from('store_notifications')
+    .update({ last_sent_on: today, updated_at: new Date().toISOString() })
+    .eq('discord_id', notification.discord_id)
+    .eq('account_name', notification.account_name);
+  if (error) console.error(`상점 알림 발송 기록 실패 (${notification.discord_id}): ${error.message}`);
+}
+
 async function processStoreNotifications(client) {
   const now = getKstDateParts();
-  const today = `${now.year}-${String(now.month).padStart(2, '0')}-${String(now.day).padStart(2, '0')}`;
+  const today = formatKstDate(now);
+  const currentMinute = toMinuteOfDay(now.hour, now.minute);
+  // Due = scheduled time already passed today and not yet sent, so a missed minute (restart, timer drift) is caught up.
   const { data: notifications, error } = await supabase
     .from('store_notifications')
     .select('discord_id, account_name, hour, minute, last_sent_on')
     .eq('enabled', true)
-    .eq('hour', now.hour)
-    .eq('minute', now.minute);
+    .or(`last_sent_on.is.null,last_sent_on.lt.${today}`);
   if (error) {
     if (error.code !== '42P01') console.error(`상점 알림 목록 조회 실패: ${error.message}`);
     return;
   }
 
-  for (const notification of (notifications ?? []).filter((item) => item.last_sent_on !== today)) {
+  const due = (notifications ?? []).filter((notification) =>
+    toMinuteOfDay(notification.hour, notification.minute) <= currentMinute
+    && (storeNotificationRetryAfter.get(`${notification.discord_id}:${notification.account_name}`) ?? 0) <= Date.now());
+
+  for (const notification of due) {
+    const retryKey = `${notification.discord_id}:${notification.account_name}`;
     try {
       await sendStoreNotification(client, notification);
-      await supabase
-        .from('store_notifications')
-        .update({ last_sent_on: today, updated_at: new Date().toISOString() })
-        .eq('discord_id', notification.discord_id)
-        .eq('account_name', notification.account_name);
     } catch (error) {
       console.warn(`상점 알림 전송 실패 (${notification.discord_id}): ${error.message}`);
       if (error.code === 'RIOT_SESSION_EXPIRED') {
@@ -181,9 +178,28 @@ async function processStoreNotifications(client) {
         } catch (dmError) {
           console.warn(`세션 만료 안내 DM 실패 (${notification.discord_id}): ${dmError.message}`);
         }
+        // Retrying won't help until the user relinks; don't repeat the notice for the rest of the day.
+        await markStoreNotificationSent(notification, today);
+      } else if (error.code === DISCORD_CANNOT_DM_USER) {
+        await markStoreNotificationSent(notification, today);
+      } else {
+        storeNotificationRetryAfter.set(retryKey, Date.now() + STORE_NOTIFICATION_RETRY_MS);
       }
+      continue;
     }
+    storeNotificationRetryAfter.delete(retryKey);
+    await markStoreNotificationSent(notification, today);
   }
+}
+
+function runStoreNotifications(client) {
+  if (storeNotificationRunning) return;
+  storeNotificationRunning = true;
+  processStoreNotifications(client)
+    .catch((error) => console.error(`상점 알림 처리 실패: ${error.message}`))
+    .finally(() => {
+      storeNotificationRunning = false;
+    });
 }
 
 async function processFavoriteRefreshNotifications(client) {
@@ -300,10 +316,10 @@ function runFavoriteRefreshNotifications(client) {
 
 export function startStoreNotificationScheduler(client) {
   if (notificationTimer) clearInterval(notificationTimer);
-  processStoreNotifications(client).catch((error) => console.error(`상점 알림 처리 실패: ${error.message}`));
+  runStoreNotifications(client);
   runFavoriteRefreshNotifications(client);
   notificationTimer = setInterval(() => {
-    processStoreNotifications(client).catch((error) => console.error(`상점 알림 처리 실패: ${error.message}`));
+    runStoreNotifications(client);
     runFavoriteRefreshNotifications(client);
   }, NOTIFICATION_INTERVAL_MS);
 }

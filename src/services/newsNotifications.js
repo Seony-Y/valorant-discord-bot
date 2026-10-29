@@ -1,6 +1,7 @@
 import { ChannelType, EmbedBuilder } from 'discord.js';
 import { supabase } from './supabase.js';
 import { fetchOfficialValorantNews } from './valorantNews.js';
+import { formatKstDate, getKstDate, getKstDateParts, toMinuteOfDay } from './kstTime.js';
 
 const CHECK_INTERVAL_MS = 60 * 1000;
 const NEWS_LOOKBACK_MS = 14 * 24 * 60 * 60 * 1000;
@@ -8,19 +9,6 @@ const MAX_ARTICLES_PER_DELIVERY = 5;
 const NEWS_CHANNEL_NAME = '발로란트-공식-소식';
 let notificationTimer;
 let notificationRunning = false;
-
-function getKstDateParts(date = new Date()) {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Seoul',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23',
-  }).formatToParts(date);
-  return Object.fromEntries(parts.filter(({ type }) => type !== 'literal').map(({ type, value }) => [type, Number(value)]));
-}
 
 function getArticleLabel(article) {
   if (article.category === 'announcements') return '국내 공지';
@@ -101,8 +89,7 @@ export async function configureNewsNotification(guild, selectedChannel, hour, mi
     `발로란트 공식 소식 알림이 설정되었습니다. 매일 한국 시간 **${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}** 이후 새 소식을 전송합니다.`
   );
   if (!existing) {
-    const now = getKstDateParts();
-    const today = `${now.year}-${String(now.month).padStart(2, '0')}-${String(now.day).padStart(2, '0')}`;
+    const today = getKstDate();
     const articles = await fetchOfficialValorantNews();
     await sendPendingNews(guild.client, {
       guild_id: guild.id,
@@ -165,15 +152,14 @@ export async function sendNewsNotificationNow(client, guildId) {
     .maybeSingle();
   if (error) throw error;
   if (!subscription) throw new Error('활성화된 소식 알림 설정이 없습니다.');
-  const now = getKstDateParts();
-  const today = `${now.year}-${String(now.month).padStart(2, '0')}-${String(now.day).padStart(2, '0')}`;
+  const today = getKstDate();
   const articles = await fetchOfficialValorantNews();
   return sendPendingNews(client, subscription, articles, today);
 }
 
 async function processNewsNotifications(client) {
   const now = getKstDateParts();
-  const today = `${now.year}-${String(now.month).padStart(2, '0')}-${String(now.day).padStart(2, '0')}`;
+  const today = formatKstDate(now);
   const { data: subscriptions, error } = await supabase
     .from('valorant_news_subscriptions')
     .select('guild_id, channel_id, hour, minute, last_sent_on')
@@ -182,9 +168,9 @@ async function processNewsNotifications(client) {
     if (error.code !== '42P01' && error.code !== 'PGRST205') console.error(`소식 알림 목록 조회 실패: ${error.message}`);
     return;
   }
-  const currentMinute = now.hour * 60 + now.minute;
+  const currentMinute = toMinuteOfDay(now.hour, now.minute);
   const due = (subscriptions ?? []).filter((subscription) =>
-    subscription.last_sent_on !== today && currentMinute >= subscription.hour * 60 + subscription.minute);
+    subscription.last_sent_on !== today && currentMinute >= toMinuteOfDay(subscription.hour, subscription.minute));
   if (!due.length) return;
 
   const articles = await fetchOfficialValorantNews();

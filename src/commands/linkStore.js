@@ -75,7 +75,11 @@ export async function execute(interaction) {
       await interaction.editReply(`Riot Mobile 로그인이 완료되었습니다${riotLabel}. 이제 /상점 계정명:${accountName} 으로 오늘의 상점을 조회할 수 있습니다.`);
       return;
     }
+    await interaction.editReply({
+      content: 'QR 로그인 시간이 만료되었습니다. `/상점연동`을 다시 실행해주세요.',
+      attachments: [],
+    });
   } catch (err) {
-    await interaction.editReply(`QR 로그인에 실패했습니다: ${err.message}`);
+    await interaction.editReply({ content: `QR 로그인에 실패했습니다: ${err.message}`, attachments: [] });
   }
 }
