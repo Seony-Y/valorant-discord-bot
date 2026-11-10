@@ -8,14 +8,27 @@ import axios from 'axios';
 import crypto from 'node:crypto';
 import { wrapper } from 'axios-cookiejar-support';
 import { CookieJar } from 'tough-cookie';
-import { getValorantAssets } from './valorantAssets.js';
+import {
+  forgetUnresolvedBundle,
+  getBundleOverrides,
+  getValorantAssets,
+  recordUnresolvedBundle,
+} from './valorantAssets.js';
 
 const ALGO = 'aes-256-gcm';
 const QR_LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
 const CLIENT_VERSION_CACHE_TTL_MS = 15 * 60 * 1000;
+const RIOT_CONTENT_CACHE_TTL_MS = 15 * 60 * 1000;
+// Without a timeout a single hung request stalls the store notification scheduler indefinitely.
+const RIOT_REQUEST_TIMEOUT_MS = 15_000;
+// valorant-api.com may add a missing image later, so misses are only cached briefly.
+const MEDIA_IMAGE_MISS_TTL_MS = 10 * 60 * 1000;
+const http = axios.create({ timeout: RIOT_REQUEST_TIMEOUT_MS });
 const pendingQrLogins = new Map();
 const clientVersionCache = new Map();
+const riotContentCache = new Map();
 const mediaImageCache = new Map();
+const contentIndexes = new WeakMap();
 const ITEM_TYPE_MEDIA_PATHS = new Map([
   ['e7c63390-eda7-46e0-bb7a-a6abdacd2433', 'weaponskinlevels'],
   ['dd3bf334-87f3-40bd-b043-682a57a8dc3a', 'buddylevels'],
@@ -26,12 +39,17 @@ const ITEM_TYPE_MEDIA_PATHS = new Map([
 async function getMediaImage(path, itemId) {
   if (!path || !itemId) return null;
   const url = `https://media.valorant-api.com/${path}/${itemId}/displayicon.png`;
-  if (!mediaImageCache.has(url)) {
-    mediaImageCache.set(url, axios.head(url)
-      .then(({ headers }) => headers['content-type']?.startsWith('image/') ? url : null)
-      .catch(() => null));
-  }
-  return mediaImageCache.get(url);
+  const cached = mediaImageCache.get(url);
+  if (cached && cached.expiresAt > Date.now()) return cached.image;
+
+  const image = http.head(url)
+    .then(({ headers }) => headers['content-type']?.startsWith('image/') ? url : null)
+    .catch(() => null);
+  mediaImageCache.set(url, { image, expiresAt: Infinity });
+  image.then((result) => {
+    if (!result) mediaImageCache.set(url, { image, expiresAt: Date.now() + MEDIA_IMAGE_MISS_TTL_MS });
+  });
+  return image;
 }
 
 async function getRiotClientVersion(shard) {
@@ -41,7 +59,7 @@ async function getRiotClientVersion(shard) {
 
   let version;
   try {
-    const { data } = await axios.get(`https://api.henrikdev.xyz/valorant/v1/version/${region}`, {
+    const { data } = await http.get(`https://api.henrikdev.xyz/valorant/v1/version/${region}`, {
       headers: { Authorization: process.env.HENRIK_API_KEY },
     });
     version = data.data?.version_for_api;
@@ -50,7 +68,7 @@ async function getRiotClientVersion(shard) {
   }
 
   if (!version) {
-    const { data } = await axios.get('https://valorant-api.com/v1/version');
+    const { data } = await http.get('https://valorant-api.com/v1/version');
     version = data.data.riotClientVersion;
   }
   clientVersionCache.set(region, { version, updatedAt: Date.now() });
@@ -98,7 +116,7 @@ export function decryptCredential({ encrypted, iv, authTag }) {
 
 function newSession() {
   const jar = new CookieJar();
-  const client = wrapper(axios.create({ jar, withCredentials: true }));
+  const client = wrapper(axios.create({ jar, withCredentials: true, timeout: RIOT_REQUEST_TIMEOUT_MS }));
   return { client, jar };
 }
 
@@ -278,7 +296,7 @@ export async function checkRiotQrLogin(id) {
 }
 
 export async function restoreRiotStoreSession({ ssid, puuid, shard }) {
-  const { headers } = await axios.get('https://auth.riotgames.com/authorize', {
+  const { headers } = await http.get('https://auth.riotgames.com/authorize', {
     params: {
       redirect_uri: 'https://playvalorant.com/opt_in',
       client_id: 'play-valorant-web-prod',
@@ -300,7 +318,7 @@ export async function restoreRiotStoreSession({ ssid, puuid, shard }) {
     throw createSessionExpiredError();
   }
 
-  const entitlementsRes = await axios.post(
+  const entitlementsRes = await http.post(
     'https://entitlements.auth.riotgames.com/api/token/v1',
     {},
     {
@@ -359,7 +377,7 @@ export async function getRiotDisplayName({ accessToken, entitlementsToken, puuid
     })
   ).toString('base64');
 
-  const { data } = await requestWithCurrentClientVersion(shard, (clientVersion) => axios.put(
+  const { data } = await requestWithCurrentClientVersion(shard, (clientVersion) => http.put(
     `https://pd.${shard}.a.pvp.net/name-service/v2/players`,
     [puuid],
     {
@@ -388,7 +406,7 @@ export async function getStorefront({ accessToken, entitlementsToken, puuid, sha
     })
   ).toString('base64');
 
-  const { data } = await requestWithCurrentClientVersion(shard, (clientVersion) => axios.post(
+  const { data } = await requestWithCurrentClientVersion(shard, (clientVersion) => http.post(
     `https://pd.${shard}.a.pvp.net/store/v3/storefront/${puuid}`,
     {},
     {
@@ -403,7 +421,32 @@ export async function getStorefront({ accessToken, entitlementsToken, puuid, sha
   return data;
 }
 
-export async function getRiotContent({ accessToken, entitlementsToken, shard }) {
+/** Riot content-service catalog, cached per shard since it is large and identical for every account. */
+export async function getRiotContent(session) {
+  const region = String(session.shard ?? 'kr').toLowerCase();
+  const cached = riotContentCache.get(region);
+  if (cached && Date.now() - cached.updatedAt < RIOT_CONTENT_CACHE_TTL_MS) return cached.content;
+  if (cached?.promise) return cached.promise;
+
+  const promise = fetchRiotContent(session)
+    .then((content) => {
+      riotContentCache.set(region, { content, updatedAt: Date.now() });
+      return content;
+    })
+    .catch((error) => {
+      if (!cached?.content) {
+        riotContentCache.delete(region);
+        throw error;
+      }
+      // Serve the stale catalog and retry in a few minutes rather than on every request.
+      riotContentCache.set(region, { content: cached.content, updatedAt: Date.now() - RIOT_CONTENT_CACHE_TTL_MS + 5 * 60 * 1000 });
+      return cached.content;
+    });
+  riotContentCache.set(region, { ...cached, promise });
+  return promise;
+}
+
+async function fetchRiotContent({ accessToken, entitlementsToken, shard }) {
   const clientPlatform = Buffer.from(
     JSON.stringify({
       platformType: 'PC',
@@ -413,7 +456,7 @@ export async function getRiotContent({ accessToken, entitlementsToken, shard }) 
     })
   ).toString('base64');
 
-  const { data } = await requestWithCurrentClientVersion(shard, (clientVersion) => axios.get(
+  const { data } = await requestWithCurrentClientVersion(shard, (clientVersion) => http.get(
     `https://shared.${shard}.a.pvp.net/content-service/v3/content`,
     {
       headers: {
@@ -446,6 +489,7 @@ export async function resolveSkinOffers(offerIds) {
     const skin = itemsById.get(id);
     const tier = tiersById.get(skin?.contentTierUuid);
     return {
+      skinId: skin?.uuid ?? null,
       name: skin?.displayName ?? id,
       image: resolveSkinImage(skin, id),
       tierImage: tier?.displayIcon ?? null,
@@ -460,13 +504,15 @@ export async function searchWeaponSkins(query = '') {
   return skins
     .filter((skin) => skin.displayName?.toLocaleLowerCase('ko-KR').includes(normalizedQuery))
     .slice(0, 25)
-    .map((skin) => ({ name: skin.displayName, image: resolveSkinImage(skin) }));
+    .map((skin) => ({ id: skin.uuid, name: skin.displayName, image: resolveSkinImage(skin) }));
 }
 
-function findRiotContentItem(content, itemId) {
-  if (!content || !itemId) return null;
+// Index every id-bearing node once per content object; the catalogs are shared across requests via their caches.
+function getContentIndex(content) {
+  let index = contentIndexes.get(content);
+  if (index) return index;
 
-  const normalizedItemId = itemId.toLowerCase();
+  index = new Map();
   const pending = [content];
   const visited = new Set();
   while (pending.length) {
@@ -475,28 +521,28 @@ function findRiotContentItem(content, itemId) {
     visited.add(value);
 
     const id = value.ID ?? value.id ?? value.UUID ?? value.uuid;
-    if (typeof id === 'string' && id.toLowerCase() === normalizedItemId) return value;
+    if (typeof id === 'string' && !index.has(id.toLowerCase())) index.set(id.toLowerCase(), value);
     pending.push(...Object.values(value).filter((entry) => entry && typeof entry === 'object'));
   }
-  return null;
+  contentIndexes.set(content, index);
+  return index;
 }
 
 function findContentItem(contents, itemId) {
+  if (!itemId) return null;
   return (Array.isArray(contents) ? contents : [contents])
-    .map((content) => findRiotContentItem(content, itemId))
-    .find(Boolean);
+    .filter((content) => content && typeof content === 'object')
+    .map((content) => getContentIndex(content).get(itemId.toLowerCase()))
+    .find(Boolean) ?? null;
 }
 
 function getRiotContentName(item) {
   const localizedNames = item?.LocalizedNames ?? item?.localizedNames;
-  const name = localizedNames?.['ko-KR']
+  return localizedNames?.['ko-KR']
     ?? localizedNames?.ko_KR
     ?? item?.Name
     ?? item?.name
     ?? null;
-  return /^(warden|워든)(?:\s*(?:bundle|번들))?$/i.test(name?.trim() ?? '')
-    ? '2026 챔피언스'
-    : name;
 }
 
 function getRiotContentImage(item) {
@@ -540,37 +586,66 @@ export async function resolveStoreItems(itemIds, riotContent = null, itemTypes =
   }));
 }
 
-export async function resolveBundle(bundleId, alternateId = null, storefrontBundle = null, riotContent = null) {
+// New bundles usually ship as one skin theme, so the theme name is a good stand-in until valorant-api.com adds the bundle.
+function getBundleThemeName(itemIds, itemsById, themesById) {
+  const themeCounts = new Map();
+  for (const id of itemIds) {
+    const themeId = itemsById.get(id)?.themeUuid;
+    if (themeId) themeCounts.set(themeId, (themeCounts.get(themeId) ?? 0) + 1);
+  }
+  const [themeId] = [...themeCounts].sort((left, right) => right[1] - left[1])[0] ?? [];
+  return themesById.get(themeId)?.displayName ?? null;
+}
+
+function toImageUrl(image) {
+  return typeof image === 'string' && /^https?:\/\//i.test(image) ? image : null;
+}
+
+export async function resolveBundle(bundleId, alternateId = null, storefrontBundle = null, riotContent = null, itemIds = []) {
   if (!bundleId && !alternateId) return null;
-  const { bundlesById } = await getValorantAssets();
+  const [{ bundlesById, itemsById, themesById }, overrides] = await Promise.all([
+    getValorantAssets(),
+    getBundleOverrides(),
+  ]);
+  const override = overrides.get(alternateId?.toLowerCase()) ?? overrides.get(bundleId?.toLowerCase());
   const bundle = bundlesById.get(bundleId) ?? bundlesById.get(alternateId);
-  if (!bundle) {
-    const riotBundle = findContentItem(riotContent, alternateId)
-      ?? findContentItem(riotContent, bundleId);
-    const name = storefrontBundle?.DisplayName
-      ?? storefrontBundle?.displayName
-      ?? storefrontBundle?.Name
-      ?? storefrontBundle?.name
-      ?? getRiotContentName(riotBundle)
-      ?? '출시 예정 번들';
-    const image = storefrontBundle?.DisplayIcon
+  if (bundle) {
+    forgetUnresolvedBundle(alternateId ?? bundleId);
+    return {
+      name: override?.name ?? bundle.displayName,
+      image: toImageUrl(override?.image_url) ?? bundle.displayIcon ?? bundle.verticalPromoImage ?? null,
+    };
+  }
+
+  const riotBundle = findContentItem(riotContent, alternateId)
+    ?? findContentItem(riotContent, bundleId);
+  const name = override?.name
+    ?? storefrontBundle?.DisplayName
+    ?? storefrontBundle?.displayName
+    ?? storefrontBundle?.Name
+    ?? storefrontBundle?.name
+    ?? getRiotContentName(riotBundle)
+    ?? getBundleThemeName(itemIds, itemsById, themesById)
+    ?? null;
+  const image = toImageUrl(override?.image_url)
+    ?? toImageUrl(storefrontBundle?.DisplayIcon
       ?? storefrontBundle?.displayIcon
       ?? storefrontBundle?.Image
       ?? storefrontBundle?.image
       ?? storefrontBundle?.VerticalPromoImage
-      ?? storefrontBundle?.verticalPromoImage
-      ?? getRiotContentImage(riotBundle)
-      ?? await getMediaImage('bundles', alternateId);
-    if (!riotBundle && name === '출시 예정 번들') {
-      console.warn('[store-metadata] unresolved bundle', { bundleId, dataAssetId: alternateId });
-    }
-    return {
-      name,
-      image: typeof image === 'string' && /^https?:\/\//i.test(image) ? image : null,
-    };
+      ?? storefrontBundle?.verticalPromoImage)
+    ?? getRiotContentImage(riotBundle)
+    ?? await getMediaImage('bundles', alternateId);
+  if (!override) {
+    console.warn('[store-metadata] bundle missing from valorant-api', { bundleId, dataAssetId: alternateId, fallbackName: name });
+    recordUnresolvedBundle(alternateId ?? bundleId, itemIds
+      .map((id) => itemsById.get(id)?.displayName ?? getRiotContentName(findContentItem(riotContent, id)))
+      .filter(Boolean));
+  } else {
+    forgetUnresolvedBundle(alternateId ?? bundleId);
   }
   return {
-    name: bundle.displayName,
-    image: bundle.displayIcon ?? bundle.verticalPromoImage ?? null,
+    name: name ?? '출시 예정 번들',
+    image,
   };
 }

@@ -14,6 +14,7 @@ import {
 } from '../services/riotAuth.js';
 import { supabase } from '../services/supabase.js';
 import { getValorantContent } from '../services/henrik.js';
+import { ensureValorantAssets } from '../services/valorantAssets.js';
 import { autocompleteStoreAccount, persistRotatedSsid } from '../services/storeAccounts.js';
 
 const STORE_VIEW_TIMEOUT_MS = 24 * 60 * 60 * 1000;
@@ -221,7 +222,8 @@ function buildViewPayload(view) {
   };
 }
 
-export async function createStorePages(session, favoriteNames = []) {
+/** favorites: store_favorites rows ({ item_name, item_id }) or plain item names. */
+export async function createStorePages(session, favorites = []) {
   const [storefront, riotContent, henrikContent] = await Promise.all([
     getStorefront(session),
     getRiotContent(session).catch((error) => {
@@ -248,25 +250,39 @@ export async function createStorePages(session, favoriteNames = []) {
   const nightMarketDetails = getNightMarketOfferDetails(storefront);
   const featuredBundle = storefront.FeaturedBundle?.Bundle;
   const featuredBundleId = featuredBundle?.ID ?? featuredBundle?.DataAssetID;
-  const upcomingBundles = (storefront.FeaturedBundle?.Bundles ?? [])
+  // FeaturedBundle.Bundles lists every bundle currently on sale (each with its own remaining duration), not upcoming ones.
+  const otherBundles = (storefront.FeaturedBundle?.Bundles ?? [])
     .filter((entry) => (entry.ID ?? entry.DataAssetID) !== featuredBundleId)
-    .sort((left, right) => (getBundleStartDate(left)?.getTime() ?? Infinity) - (getBundleStartDate(right)?.getTime() ?? Infinity));
+    .sort((left, right) => (getBundleEndDate(left)?.getTime() ?? Infinity) - (getBundleEndDate(right)?.getTime() ?? Infinity));
   const bundleEntries = [
     ...(featuredBundle ? [{
       source: featuredBundle,
       startsAt: null,
       endsAt: getBundleEndDate(featuredBundle, storefront.FeaturedBundle?.BundleRemainingDurationInSeconds),
     }] : []),
-    ...upcomingBundles.map((source) => ({ source, startsAt: getBundleStartDate(source), endsAt: null })),
+    ...otherBundles.map((source) => {
+      const startsAt = getBundleStartDate(source);
+      return { source, startsAt: startsAt > Date.now() ? startsAt : null, endsAt: getBundleEndDate(source) };
+    }),
   ];
+  const nightMarketIds = nightMarketDetails.map(({ itemId }) => itemId);
+  await ensureValorantAssets({
+    itemIds: [
+      ...offerIds,
+      ...accessoryIds,
+      ...nightMarketIds,
+      ...bundleEntries.flatMap(({ source }) => getBundleItemEntries(source).map(({ Item }) => Item.ItemID)),
+    ],
+    bundleIds: bundleEntries.map(({ source }) => source.DataAssetID ?? source.ID),
+  });
   const [offers, accessories, nightMarketOffers, bundlePages] = await Promise.all([
     resolveSkinOffers(offerIds),
     resolveStoreItems(accessoryIds, currentContent),
-    resolveSkinOffers(nightMarketDetails.map(({ itemId }) => itemId)),
+    resolveSkinOffers(nightMarketIds),
     Promise.all(bundleEntries.map(async ({ source, startsAt, endsAt }) => {
       const itemEntries = getBundleItemEntries(source);
       const [bundle, contents] = await Promise.all([
-        resolveBundle(source.ID, source.DataAssetID, source, currentContent),
+        resolveBundle(source.ID, source.DataAssetID, source, currentContent, itemEntries.map(({ Item }) => Item.ItemID)),
         resolveStoreItems(
           itemEntries.map(({ Item }) => Item.ItemID),
           currentContent,
@@ -295,19 +311,23 @@ export async function createStorePages(session, favoriteNames = []) {
   const accessoryPrices = getPriceByRewardId(accessoryOffers);
 
   const dailyItems = offers.map((offer, index) => ({ ...offer, cost: dailyPrices.get(offerIds[index]) }));
+  const nightMarketItems = nightMarketOffers.map((offer, index) => ({ ...offer, ...nightMarketDetails[index] }));
   const [dailyPage, accessoryPage, nightMarketPage] = [
     { embeds: makeItemEmbeds(dailyItems) },
     { embeds: makeItemEmbeds(accessories.map((accessory, index) => ({ ...accessory, cost: accessoryPrices.get(accessoryIds[index]) }))) },
-    nightMarketDetails.length
-      ? { embeds: makeItemEmbeds(nightMarketOffers.map((offer, index) => ({ ...offer, ...nightMarketDetails[index] }))) }
-      : null,
+    nightMarketDetails.length ? { embeds: makeItemEmbeds(nightMarketItems) } : null,
   ];
-  const favoriteSet = new Set(favoriteNames.map((name) => name.toLocaleLowerCase('ko-KR')));
-  const favoriteMatches = offers
-    .map((offer) => offer.name)
-    .filter((name) => favoriteSet.has(name.toLocaleLowerCase('ko-KR')));
-  const favoriteEmbeds = makeItemEmbeds(dailyItems.filter((item) =>
-    favoriteSet.has(item.name.toLocaleLowerCase('ko-KR'))));
+  // Match by skin uuid when known so a renamed translation doesn't break favorites; fall back to the stored name.
+  const normalizedFavorites = favorites.map((favorite) => typeof favorite === 'string'
+    ? { name: favorite, itemId: null }
+    : { name: favorite.item_name, itemId: favorite.item_id ?? null });
+  const findFavorite = (item) => normalizedFavorites.find(({ name, itemId }) =>
+    (itemId && itemId === item.skinId) || name.toLocaleLowerCase('ko-KR') === item.name.toLocaleLowerCase('ko-KR'));
+  const favoriteItems = [...dailyItems, ...nightMarketItems]
+    .map((item) => ({ item, favorite: findFavorite(item) }))
+    .filter(({ favorite }) => favorite);
+  const favoriteMatches = [...new Set(favoriteItems.map(({ favorite }) => favorite.name))];
+  const favoriteEmbeds = makeItemEmbeds(favoriteItems.map(({ item }) => item));
 
   const pages = [
     dailyPage,

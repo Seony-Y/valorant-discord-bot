@@ -62,6 +62,16 @@ alter table store_favorites
 
 alter table store_favorites
   add column if not exists last_notified_on date;
+alter table store_favorites
+  add column if not exists item_id text;
+
+create table if not exists bundle_overrides (
+  bundle_id text primary key,
+  name text not null,
+  image_url text,
+  updated_by text,
+  updated_at timestamptz not null default now()
+);
 
 create table if not exists valorant_news_subscriptions (
   guild_id text primary key,

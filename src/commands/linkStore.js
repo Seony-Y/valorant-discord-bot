@@ -58,12 +58,16 @@ export async function execute(interaction) {
       let accountName = requestedAccountName;
       if (!explicitAccountName) {
         // 계정명을 지정하지 않았다면 같은 Riot 계정(puuid)의 기존 연동 기록을 갱신해 중복 저장을 막는다.
-        const { data: existing } = await supabase
+        // 같은 puuid가 여러 계정명으로 저장돼 있을 수 있으므로 maybeSingle 대신 가장 최근 기록 하나만 사용한다.
+        const { data: existing, error: existingError } = await supabase
           .from('riot_store_sessions')
           .select('account_name')
           .eq('discord_id', interaction.user.id)
           .eq('puuid', session.puuid)
+          .order('updated_at', { ascending: false })
+          .limit(1)
           .maybeSingle();
+        if (existingError) throw existingError;
         if (existing) {
           accountName = existing.account_name;
         } else if (displayName) {

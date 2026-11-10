@@ -15,15 +15,16 @@ const storeNotificationRetryAfter = new Map();
 let favoriteRefreshRunning = false;
 let favoriteRefreshRetryAfter = 0;
 
-async function getFavoriteMatches(discordId, account, favoriteNames) {
+async function getFavoriteMatches(discordId, account, favorites) {
   const ssid = decryptCredential({ encrypted: account.encrypted_ssid, iv: account.iv, authTag: account.auth_tag });
   const session = await restoreRiotStoreSession({ ssid, puuid: account.puuid, shard: account.shard });
   await persistRotatedSsid(discordId, account.account_name, session);
-  const { favoriteMatches, favoriteEmbeds } = await createStorePages(session, favoriteNames);
+  const { favoriteMatches, favoriteEmbeds } = await createStorePages(session, favorites);
   return { favoriteMatches, favoriteEmbeds };
 }
 
-export async function checkFavoritesAfterAdd(client, userId, itemNames) {
+export async function checkFavoritesAfterAdd(client, userId, favorites) {
+  const itemNames = favorites.map((favorite) => favorite.item_name);
   const { data: notifications, error: notificationError } = await supabase
     .from('store_notifications')
     .select('account_name, hour, minute')
@@ -52,7 +53,7 @@ export async function checkFavoritesAfterAdd(client, userId, itemNames) {
   let checkedAccountCount = 0;
   for (const account of targetAccounts) {
     try {
-      const { favoriteMatches: matches, favoriteEmbeds } = await getFavoriteMatches(userId, account, itemNames);
+      const { favoriteMatches: matches, favoriteEmbeds } = await getFavoriteMatches(userId, account, favorites);
       checkedAccountCount += 1;
       if (matches.length) matchedByAccount.push({
         accountName: account.account_name,
@@ -110,14 +111,13 @@ async function sendStoreNotification(client, notification) {
   await persistRotatedSsid(notification.discord_id, notification.account_name, session);
   const { data: favorites, error: favoritesError } = await supabase
     .from('store_favorites')
-    .select('item_name, last_notified_on')
+    .select('item_name, item_id, last_notified_on')
     .eq('discord_id', notification.discord_id);
   if (favoritesError && favoritesError.code !== '42P01') throw favoritesError;
   const today = getKstDate();
-  const pendingFavoriteNames = (favorites ?? [])
-    .filter((favorite) => favorite.last_notified_on !== today)
-    .map((favorite) => favorite.item_name);
-  const { pages, favoriteMatches } = await createStorePages(session, pendingFavoriteNames);
+  const pendingFavorites = (favorites ?? [])
+    .filter((favorite) => favorite.last_notified_on !== today);
+  const { pages, favoriteMatches } = await createStorePages(session, pendingFavorites);
   const user = await client.users.fetch(notification.discord_id);
   const favoriteMessage = favoriteMatches.length
     ? `\n\n⭐ 즐겨찾기한 스킨이 오늘 상점에 등장했습니다.\n등장 계정: **${account.account_name}**\n즐겨찾기한 스킨: ${favoriteMatches.map((name) => `**${name}**`).join(', ')}`
@@ -208,7 +208,7 @@ async function processFavoriteRefreshNotifications(client) {
   const today = getKstDate();
   const { data: favorites, error: favoriteError } = await supabase
     .from('store_favorites')
-    .select('discord_id, item_name')
+    .select('discord_id, item_name, item_id')
     .or(`last_checked_on.is.null,last_checked_on.lt.${today}`);
   if (favoriteError) {
     console.error(`즐겨찾기 갱신 목록 조회 실패: ${favoriteError.message}`);
@@ -244,7 +244,7 @@ async function processFavoriteRefreshNotifications(client) {
         let checkedAccountCount = 0;
         for (const account of (accounts ?? []).filter((entry) => entry.discord_id === userId)) {
           try {
-            const { favoriteMatches: matches, favoriteEmbeds } = await getFavoriteMatches(userId, account, itemNames);
+            const { favoriteMatches: matches, favoriteEmbeds } = await getFavoriteMatches(userId, account, userFavorites);
             checkedAccountCount += 1;
             if (matches.length) matchedByAccount.push({
               accountName: account.account_name,

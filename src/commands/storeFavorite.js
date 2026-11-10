@@ -150,6 +150,7 @@ export async function execute(interaction) {
         matched.map((skin) => ({
           discord_id: interaction.user.id,
           item_name: skin.name,
+          item_id: skin.id,
           image_url: skin.image,
           last_checked_on: null,
           last_notified_on: null,
@@ -167,7 +168,11 @@ export async function execute(interaction) {
     if (unmatched.length) lines.push(`찾지 못함: ${unmatched.map((name) => `**${name}**`).join(', ')}`);
     if (matched.length) {
       try {
-        const result = await checkFavoritesAfterAdd(interaction.client, interaction.user.id, matched.map((skin) => skin.name));
+        const result = await checkFavoritesAfterAdd(
+          interaction.client,
+          interaction.user.id,
+          matched.map((skin) => ({ item_name: skin.name, item_id: skin.id })),
+        );
         lines.push(getNotificationStatus(result));
       } catch (notificationError) {
         console.warn(`즐겨찾기 즉시 확인 실패 (${interaction.user.id}): ${notificationError.message}`);
@@ -196,6 +201,7 @@ export async function execute(interaction) {
     const { error } = await supabase.from('store_favorites').upsert({
       discord_id: interaction.user.id,
       item_name: skin.name,
+      item_id: skin.id,
       image_url: skin.image,
       last_checked_on: null,
       last_notified_on: null,
@@ -209,7 +215,7 @@ export async function execute(interaction) {
     }
     let notificationStatus;
     try {
-      const result = await checkFavoritesAfterAdd(interaction.client, interaction.user.id, [skin.name]);
+      const result = await checkFavoritesAfterAdd(interaction.client, interaction.user.id, [{ item_name: skin.name, item_id: skin.id }]);
       notificationStatus = getNotificationStatus(result);
     } catch (notificationError) {
       console.warn(`즐겨찾기 즉시 확인 실패 (${interaction.user.id}): ${notificationError.message}`);
