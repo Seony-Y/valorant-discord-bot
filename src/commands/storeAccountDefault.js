@@ -38,10 +38,13 @@ export async function execute(interaction) {
     return;
   }
 
-  const { error: clearError } = await supabase
+  // The one-default unique index forbids setting the new default first, so clear the old one and restore it if setting fails.
+  const { data: previousDefaults, error: clearError } = await supabase
     .from('riot_store_sessions')
     .update({ is_default: false })
-    .eq('discord_id', interaction.user.id);
+    .eq('discord_id', interaction.user.id)
+    .eq('is_default', true)
+    .select('account_name');
   if (clearError) {
     await interaction.editReply(`기본 계정을 설정하지 못했습니다: ${clearError.message}`);
     return;
@@ -53,6 +56,15 @@ export async function execute(interaction) {
     .eq('discord_id', interaction.user.id)
     .eq('account_name', accountName);
   if (setError) {
+    const previousName = previousDefaults?.[0]?.account_name;
+    if (previousName) {
+      const { error: restoreError } = await supabase
+        .from('riot_store_sessions')
+        .update({ is_default: true })
+        .eq('discord_id', interaction.user.id)
+        .eq('account_name', previousName);
+      if (restoreError) console.warn(`기존 기본 계정 복구 실패 (${interaction.user.id}): ${restoreError.message}`);
+    }
     await interaction.editReply(`기본 계정을 설정하지 못했습니다: ${setError.message}`);
     return;
   }

@@ -17,6 +17,26 @@ export const data = new SlashCommandBuilder()
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// 기본 계정이 하나도 없으면 방금 연동한 계정을 기본으로 지정한다. 실패해도 /상점·/상점알림은 최근 계정으로 대체하므로 연동은 계속 진행한다.
+async function ensureDefaultStoreAccount(userId, accountName) {
+  const { data: existingDefault, error } = await supabase
+    .from('riot_store_sessions')
+    .select('account_name')
+    .eq('discord_id', userId)
+    .eq('is_default', true)
+    .maybeSingle();
+  if (error || existingDefault) {
+    if (error) console.warn(`기본 상점 계정 조회 실패 (${userId}): ${error.message}`);
+    return;
+  }
+  const { error: updateError } = await supabase
+    .from('riot_store_sessions')
+    .update({ is_default: true })
+    .eq('discord_id', userId)
+    .eq('account_name', accountName);
+  if (updateError) console.warn(`기본 상점 계정 지정 실패 (${userId}): ${updateError.message}`);
+}
+
 export async function execute(interaction) {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   const explicitAccountName = interaction.options.getString('계정명')?.trim() || null;
@@ -75,6 +95,7 @@ export async function execute(interaction) {
         }
       }
       await saveStoreSession(interaction.user.id, accountName, { ...session, ...(displayName ?? {}) });
+      await ensureDefaultStoreAccount(interaction.user.id, accountName);
       const riotLabel = displayName ? ` (${displayName.riotName}#${displayName.riotTag})` : '';
       await interaction.editReply(`Riot Mobile 로그인이 완료되었습니다${riotLabel}. 이제 /상점 계정명:${accountName} 으로 오늘의 상점을 조회할 수 있습니다.`);
       return;

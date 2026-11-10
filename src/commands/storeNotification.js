@@ -74,7 +74,8 @@ export async function execute(interaction) {
     let disableQuery = supabase
       .from('store_notifications')
       .update({ enabled: false, updated_at: new Date().toISOString() })
-      .eq('discord_id', interaction.user.id);
+      .eq('discord_id', interaction.user.id)
+      .eq('enabled', true);
     if (accountName) disableQuery = disableQuery.eq('account_name', accountName);
     const { data: disabledRows, error } = await disableQuery.select('account_name');
     if (error) {
@@ -96,17 +97,30 @@ export async function execute(interaction) {
   const hour = interaction.options.getInteger('시');
   const minute = interaction.options.getInteger('분');
   const accountName = interaction.options.getString('계정명')?.trim() ?? null;
-  const { data: account, error: accountError } = await supabase
+  let { data: account, error: accountError } = await supabase
     .from('riot_store_sessions')
     .select('account_name')
     .eq('discord_id', interaction.user.id)
     .eq(accountName ? 'account_name' : 'is_default', accountName ?? true)
     .maybeSingle();
 
+  // Same fallback as /상점: without a default account, use the most recently updated one.
+  if (!account && !accountError && !accountName) {
+    ({ data: account, error: accountError } = await supabase
+      .from('riot_store_sessions')
+      .select('account_name')
+      .eq('discord_id', interaction.user.id)
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle());
+  }
+
   if (accountError || !account) {
     await interaction.editReply(accountError
       ? '상점 계정을 확인하지 못했습니다. `/상점계정목록`에서 계정을 확인해주세요.'
-      : '알림에 사용할 상점 계정을 찾지 못했습니다. 먼저 `/상점연동`을 실행해주세요.');
+      : accountName
+        ? `연동된 계정 **${accountName}**을(를) 찾지 못했습니다. \`/상점계정목록\`에서 계정명을 확인해주세요.`
+        : '알림에 사용할 상점 계정을 찾지 못했습니다. 먼저 `/상점연동`을 실행해주세요.');
     return;
   }
 
