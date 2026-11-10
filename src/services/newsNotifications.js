@@ -8,11 +8,17 @@ const NEWS_LOOKBACK_MS = 14 * 24 * 60 * 60 * 1000;
 const MAX_ARTICLES_PER_DELIVERY = 5;
 const NEWS_CHANNEL_NAME = '발로란트-공식-소식';
 const NEWS_RETRY_MS = 15 * 60 * 1000;
-// Unknown Guild, Unknown Channel, Missing Access, Missing Permissions: retrying won't help until an admin acts.
-const PERMANENT_DISCORD_ERRORS = new Set([10004, 10003, 50001, 50013]);
+// Unknown Guild, Unknown Channel: the destination is gone, so retrying can't help.
+const PERMANENT_DISCORD_ERRORS = new Set([10004, 10003]);
+// Missing Access, Missing Permissions: an admin often fixes these, so keep retrying for a while before giving up.
+const PERMISSION_DISCORD_ERRORS = new Set([50001, 50013]);
+const PERMISSION_RETRY_MS = 60 * 60 * 1000;
+const PERMISSION_GRACE_MS = 3 * 24 * 60 * 60 * 1000;
 let notificationTimer;
 let notificationRunning = false;
 const newsRetryAfter = new Map();
+// First permission failure per guild (in memory, so a restart restarts the grace period).
+const permissionFailingSince = new Map();
 // Guilds with a delivery in flight; keeps setup and the scheduler from posting the same articles twice.
 const guildsSending = new Set();
 
@@ -110,6 +116,7 @@ export async function configureNewsNotification(guild, selectedChannel, hour, mi
       }, { onConflict: 'guild_id' });
     if (subscriptionError) throw subscriptionError;
     newsRetryAfter.delete(guild.id);
+    permissionFailingSince.delete(guild.id);
     await destinationChannel.send(
       `발로란트 공식 소식 알림이 설정되었습니다. 매일 한국 시간 **${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}** 이후 새 소식을 전송합니다.`
     );
@@ -219,11 +226,23 @@ async function processNewsNotifications(client) {
     try {
       await withGuildLock(subscription.guild_id, () => sendPendingNews(client, subscription, articles, today));
       newsRetryAfter.delete(subscription.guild_id);
+      permissionFailingSince.delete(subscription.guild_id);
     } catch (notificationError) {
       console.warn(`소식 알림 전송 실패 (${subscription.guild_id}): ${notificationError.message}`);
       if (PERMANENT_DISCORD_ERRORS.has(notificationError.code)) {
         newsRetryAfter.delete(subscription.guild_id);
+        permissionFailingSince.delete(subscription.guild_id);
         await disableBrokenSubscription(subscription.guild_id, notificationError.message);
+      } else if (PERMISSION_DISCORD_ERRORS.has(notificationError.code)) {
+        const failingSince = permissionFailingSince.get(subscription.guild_id) ?? Date.now();
+        permissionFailingSince.set(subscription.guild_id, failingSince);
+        if (Date.now() - failingSince >= PERMISSION_GRACE_MS) {
+          newsRetryAfter.delete(subscription.guild_id);
+          permissionFailingSince.delete(subscription.guild_id);
+          await disableBrokenSubscription(subscription.guild_id, `권한 오류가 3일 이상 지속됨: ${notificationError.message}`);
+        } else {
+          newsRetryAfter.set(subscription.guild_id, Date.now() + PERMISSION_RETRY_MS);
+        }
       } else {
         newsRetryAfter.set(subscription.guild_id, Date.now() + NEWS_RETRY_MS);
       }

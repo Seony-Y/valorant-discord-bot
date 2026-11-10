@@ -131,13 +131,18 @@ export async function getValorantActs() {
       const episodesById = new Map(
         acts.filter((act) => act.type === 'episode').map((episode) => [episode.id, episode.name])
       );
-      actsCache = acts
+      const actList = acts
         .filter((act) => act.type === 'act' && act.id && act.name)
         .map((act, order) => ({
           id: act.id,
           name: `${episodesById.get(act.parentId) ?? '에피소드'} · ${act.name}`,
           order,
+          isActive: act.isActive === true,
         }));
+      // Henrik lists acts newest first; put the active act first, then older ones, and any not-yet-started acts last.
+      const activeOrder = Math.max(0, actList.find((act) => act.isActive)?.order ?? 0);
+      const rank = (act) => (act.order >= activeOrder ? act.order - activeOrder : actList.length + activeOrder - act.order);
+      actsCache = actList.sort((left, right) => rank(left) - rank(right));
       actsCachedAt = Date.now();
       return actsCache;
     })

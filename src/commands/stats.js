@@ -153,7 +153,7 @@ export async function autocomplete(interaction) {
   const choices = acts
     .filter((act) => act.name.toLowerCase().includes(query))
     .slice(0, 25)
-    .map((act) => ({ name: act.name, value: act.id }));
+    .map((act) => ({ name: act.isActive ? `${act.name} (현재)` : act.name, value: act.id }));
   await interaction.respond(choices);
 }
 
