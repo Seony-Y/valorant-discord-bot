@@ -15,9 +15,16 @@ let valorantContentCachedAt = 0;
 let valorantContentCachePromise;
 const seasonMatchesCache = new Map();
 
+let actsCachedAt = 0;
+
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const SEASON_CACHE_TTL_MS = 5 * 60 * 1000;
 const CONTENT_CACHE_TTL_MS = 15 * 60 * 1000;
+
+// Riot IDs are case-insensitive, and stored names may differ in case from what match data returns.
+function isSamePlayer(entry, name, tag) {
+  return entry?.name?.toLowerCase() === name.toLowerCase() && entry?.tag?.toLowerCase() === tag.toLowerCase();
+}
 
 export async function getValorantContent() {
   if (valorantContentCache && Date.now() - valorantContentCachedAt < CONTENT_CACHE_TTL_MS) {
@@ -115,7 +122,7 @@ async function getV4Matches(region, name, tag, start) {
 }
 
 export async function getValorantActs() {
-  if (actsCache) return actsCache;
+  if (actsCache && Date.now() - actsCachedAt < CONTENT_CACHE_TTL_MS) return actsCache;
   if (actsCachePromise) return actsCachePromise;
 
   actsCachePromise = getValorantContent()
@@ -131,6 +138,7 @@ export async function getValorantActs() {
           name: `${episodesById.get(act.parentId) ?? '에피소드'} · ${act.name}`,
           order,
         }));
+      actsCachedAt = Date.now();
       return actsCache;
     })
     .finally(() => {
@@ -149,15 +157,27 @@ export async function getSeasonMatchDetails(region, name, tag, seasonId) {
   const seasonOrder = new Map(acts.map((act) => [act.id, act.order]));
   const requestedSeasonOrder = seasonOrder.get(seasonId);
   let foundSeason = false;
+  // +1 if a larger act order means a newer act, -1 if older; inferred from the newest match so it works for either act list ordering.
+  let newerDirection;
 
   for (let start = 0; start < 100; start += 10) {
     const matches = await getV4Matches(region, name, tag, start);
     const pageHasSeason = matches.some((match) => match.metadata?.season?.id === seasonId);
     if (foundSeason && !pageHasSeason) break;
+    if (newerDirection === undefined && Number.isInteger(requestedSeasonOrder)) {
+      const newestOrder = seasonOrder.get(matches[0]?.metadata?.season?.id);
+      if (Number.isInteger(newestOrder) && newestOrder !== requestedSeasonOrder) {
+        newerDirection = Math.sign(newestOrder - requestedSeasonOrder);
+      }
+    }
+    // Matches are newest first, so seeing an act older than the requested one means we've paged past it.
     if (
       !pageHasSeason &&
-      Number.isInteger(requestedSeasonOrder) &&
-      matches.some((match) => seasonOrder.get(match.metadata?.season?.id) > requestedSeasonOrder)
+      newerDirection &&
+      matches.some((match) => {
+        const order = seasonOrder.get(match.metadata?.season?.id);
+        return Number.isInteger(order) && (order - requestedSeasonOrder) * newerDirection < 0;
+      })
     ) {
       break;
     }
@@ -170,7 +190,7 @@ export async function getSeasonMatchDetails(region, name, tag, seasonId) {
         continue;
       }
 
-      const player = match.players?.find((entry) => entry.name === name && entry.tag === tag);
+      const player = match.players?.find((entry) => isSamePlayer(entry, name, tag));
       if (!player) continue;
 
       const team = match.teams?.find((entry) => entry.team_id === player.team_id);
@@ -193,6 +213,9 @@ export async function getSeasonMatchDetails(region, name, tag, seasonId) {
     if (matches.length < 10) break;
   }
 
+  for (const [key, entry] of seasonMatchesCache) {
+    if (Date.now() - entry.updatedAt >= SEASON_CACHE_TTL_MS) seasonMatchesCache.delete(key);
+  }
   seasonMatchesCache.set(cacheKey, { matchDetails, updatedAt: Date.now() });
   return matchDetails;
 }
@@ -219,6 +242,7 @@ export async function getMatchSummary(region, name, tag, size = 20, seasonId, ma
 
   let kills = 0, deaths = 0, assists = 0;
   let wins = 0;
+  let gamesConsidered = 0;
   let totalScore = 0;
   let totalDamage = 0;
   let totalDamageReceived = 0;
@@ -233,8 +257,9 @@ export async function getMatchSummary(region, name, tag, size = 20, seasonId, ma
   const totalSkillUsage = { q: 0, c: 0, e: 0, x: 0 };
 
   for (const match of matches) {
-    const me = match.players?.all_players?.find((p) => p.name === name && p.tag === tag);
+    const me = match.players?.all_players?.find((p) => isSamePlayer(p, name, tag));
     if (!me) continue;
+    gamesConsidered += 1;
 
     const myTeamId = me.team_id ?? me.team;
     const won = match.teams?.[myTeamId?.toLowerCase?.() ?? myTeamId]?.has_won ?? false;
@@ -310,7 +335,7 @@ export async function getMatchSummary(region, name, tag, size = 20, seasonId, ma
     .map(([agent, s]) => ({
       agent,
       games: s.games,
-      playRate: matches.length ? Math.round((s.games / matches.length) * 100) : 0,
+      playRate: gamesConsidered ? Math.round((s.games / gamesConsidered) * 100) : 0,
       winRate: Math.round((s.wins / s.games) * 100),
     }));
 
@@ -331,7 +356,7 @@ export async function getMatchSummary(region, name, tag, size = 20, seasonId, ma
   return {
     kda: Number(kda.toFixed(2)),
     kd: Number((deaths === 0 ? kills : kills / deaths).toFixed(2)),
-    winRate: matches.length ? Math.round((wins / matches.length) * 100) : 0,
+    winRate: gamesConsidered ? Math.round((wins / gamesConsidered) * 100) : 0,
     acs: totalRounds ? Math.round(totalScore / totalRounds) : 0,
     damagePerRound: totalRounds ? Number((totalDamage / totalRounds).toFixed(1)) : 0,
     damageDeltaPerRound: totalRounds
@@ -356,6 +381,6 @@ export async function getMatchSummary(region, name, tag, size = 20, seasonId, ma
     mapWins,
     abilityUsage: totalSkillUsage,
     matchDetails,
-    gamesConsidered: matches.length,
+    gamesConsidered,
   };
 }

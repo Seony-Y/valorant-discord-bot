@@ -126,7 +126,7 @@ async function createTeamThread(interaction, mode) {
 
 async function handleAutomaticAccountAdd(interaction, buttonInteraction, lobbyMessage, accounts, teamCount) {
   if (accounts.length >= MAX_PLAYERS) {
-    await buttonInteraction.reply({ content: '계정은 최대 10명까지 등록할 수 있습니다.', flags: MessageFlags.Ephemeral });
+    await buttonInteraction.reply({ content: `계정은 최대 ${MAX_PLAYERS}명까지 등록할 수 있습니다.`, flags: MessageFlags.Ephemeral });
     return;
   }
 
@@ -179,10 +179,9 @@ async function handleAutomaticAccountAdd(interaction, buttonInteraction, lobbyMe
         tag: modalSubmit.fields.getTextInputValue('riot-tag').trim(),
         region: modalSubmit.fields.getStringSelectValues('riot-region')[0],
       };
-      const duplicate = accounts.some(
-        (item) => item.name.toLowerCase() === account.name.toLowerCase() && item.tag.toLowerCase() === account.tag.toLowerCase() && item.region === account.region
-      );
-      if (duplicate) {
+      const isDuplicate = (item) =>
+        item.name.toLowerCase() === account.name.toLowerCase() && item.tag.toLowerCase() === account.tag.toLowerCase() && item.region === account.region;
+      if (accounts.some(isDuplicate)) {
         await modalSubmit.editReply('이미 등록된 계정입니다.');
         return;
       }
@@ -196,6 +195,15 @@ async function handleAutomaticAccountAdd(interaction, buttonInteraction, lobbyMe
         return;
       }
 
+      // Another modal may have added accounts while this one waited on the score lookup.
+      if (accounts.length >= MAX_PLAYERS) {
+        await modalSubmit.editReply(`계정은 최대 ${MAX_PLAYERS}명까지 등록할 수 있습니다.`);
+        return;
+      }
+      if (accounts.some(isDuplicate)) {
+        await modalSubmit.editReply('이미 등록된 계정입니다.');
+        return;
+      }
       accounts.push(scoredAccount);
       await modalSubmit.editReply(`${account.name}#${account.tag} (${account.region.toUpperCase()}) 등록 완료\n파워 스코어: ${scoredAccount.powerScore.toFixed(1)}`);
       await lobbyMessage.edit({ embeds: [automaticLobbyEmbed(interaction.user, accounts, teamCount)], components: [automaticControls()] });
@@ -208,6 +216,7 @@ async function handleAutomaticMode(interaction, thread, teamCount) {
   await interaction.editReply(`비공개 자동 팀짜기 스레드를 만들었습니다: ${thread}`);
 
   const accounts = [];
+  let balancing = false;
   const lobbyMessage = await thread.send({
     content: `<@${interaction.user.id}> 비공개 자동 팀짜기 스레드입니다.`,
     embeds: [automaticLobbyEmbed(interaction.user, accounts, teamCount)],
@@ -242,7 +251,12 @@ async function handleAutomaticMode(interaction, thread, teamCount) {
         await buttonInteraction.reply({ content: `${teamCount}팀으로 나누려면 최소 ${teamCount}개의 계정을 등록해주세요.`, flags: MessageFlags.Ephemeral });
         return;
       }
+      if (balancing) {
+        await buttonInteraction.reply({ content: '이미 팀을 나누는 중입니다.', flags: MessageFlags.Ephemeral });
+        return;
+      }
 
+      balancing = true;
       await buttonInteraction.deferUpdate();
       try {
         const result = balanceTeams(accounts, teamCount);
@@ -255,6 +269,8 @@ async function handleAutomaticMode(interaction, thread, teamCount) {
         setTimeout(() => thread.delete().catch(() => {}), RESULT_DELETE_DELAY_MS).unref();
       } catch (error) {
         await thread.send(`자동 팀 계산에 실패했습니다: ${error.message}`);
+      } finally {
+        balancing = false;
       }
     }
   });
@@ -270,6 +286,7 @@ async function handleAutomaticMode(interaction, thread, teamCount) {
 
 async function handleManualMode(interaction, thread, teamCount) {
   const participants = new Map([[interaction.user.id, interaction.user]]);
+  let balancing = false;
   const lobbyMessage = await thread.send({
     content: `<@${interaction.user.id}> 팀짜기 스레드가 열렸습니다.`,
     embeds: [manualLobbyEmbed(interaction.user, [...participants.values()], teamCount)],
@@ -293,7 +310,7 @@ async function handleManualMode(interaction, thread, teamCount) {
         return;
       }
       if (participants.size >= MAX_PLAYERS) {
-        await buttonInteraction.reply({ content: '참가자는 최대 10명까지 가능합니다.', flags: MessageFlags.Ephemeral });
+        await buttonInteraction.reply({ content: `참가자는 최대 ${MAX_PLAYERS}명까지 가능합니다.`, flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -305,6 +322,11 @@ async function handleManualMode(interaction, thread, teamCount) {
 
       if (error || !player) {
         await buttonInteraction.reply({ content: '먼저 `/계정등록`으로 Riot 계정을 연결해주세요.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      // Other joins may have landed while the lookup was in flight.
+      if (participants.size >= MAX_PLAYERS) {
+        await buttonInteraction.reply({ content: `참가자는 최대 ${MAX_PLAYERS}명까지 가능합니다.`, flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -343,7 +365,12 @@ async function handleManualMode(interaction, thread, teamCount) {
         await buttonInteraction.reply({ content: `${teamCount}팀으로 나누려면 최소 ${teamCount}명이 참가해야 합니다.`, flags: MessageFlags.Ephemeral });
         return;
       }
+      if (balancing) {
+        await buttonInteraction.reply({ content: '이미 팀을 나누는 중입니다.', flags: MessageFlags.Ephemeral });
+        return;
+      }
 
+      balancing = true;
       await buttonInteraction.deferUpdate();
       try {
         const scored = await Promise.all([...participants.values()].map(getOrRefreshPowerScore));
@@ -357,6 +384,8 @@ async function handleManualMode(interaction, thread, teamCount) {
         setTimeout(() => thread.delete().catch(() => {}), RESULT_DELETE_DELAY_MS).unref();
       } catch (error) {
         await thread.send(`팀 계산에 실패했습니다: ${error.message}`);
+      } finally {
+        balancing = false;
       }
     }
   });

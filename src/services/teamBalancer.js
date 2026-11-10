@@ -44,16 +44,20 @@ export function balanceTeams(players, teamCount = 2) {
     }
 
     const player = players[playerIndex];
+    // Empty teams with the same target size are interchangeable, so only try the first of each size.
+    const triedEmptySizes = new Set();
     for (let teamIndex = 0; teamIndex < teamCount; teamIndex++) {
       if (teams[teamIndex].length >= targetSizes[teamIndex]) continue;
+      if (teams[teamIndex].length === 0) {
+        if (triedEmptySizes.has(targetSizes[teamIndex])) continue;
+        triedEmptySizes.add(targetSizes[teamIndex]);
+      }
 
       teams[teamIndex].push(player);
       teamScores[teamIndex] += Number(player.powerScore ?? 0);
       search(playerIndex + 1);
       teamScores[teamIndex] -= Number(player.powerScore ?? 0);
       teams[teamIndex].pop();
-
-      if (teams[teamIndex].length === 0) break;
     }
   }
 

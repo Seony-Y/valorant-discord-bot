@@ -48,8 +48,15 @@ client.on('interactionCreate', async (interaction) => {
       await command.handleComponent(interaction);
     } catch (error) {
       console.error(error);
-      if (!interaction.replied) {
-        await interaction.reply({ content: '상점 화면을 전환하지 못했습니다. `/상점`을 다시 실행해주세요.', flags: MessageFlags.Ephemeral });
+      const payload = { content: '상점 화면을 전환하지 못했습니다. `/상점`을 다시 실행해주세요.', flags: MessageFlags.Ephemeral };
+      try {
+        if (interaction.deferred || interaction.replied) {
+          await interaction.followUp(payload);
+        } else {
+          await interaction.reply(payload);
+        }
+      } catch (responseError) {
+        if (responseError?.code !== 10062 && responseError?.code !== 40060) console.error(responseError);
       }
     }
     return;

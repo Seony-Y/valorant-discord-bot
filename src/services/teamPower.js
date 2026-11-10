@@ -58,19 +58,22 @@ export async function savePowerScoreCache(discordId, { mmr, matchSummary, powerS
 }
 
 export async function getOrRefreshPowerScore(discordUser) {
-  const { data: player } = await supabase
+  const { data: player, error: playerError } = await supabase
     .from('players')
     .select('*')
     .eq('discord_id', discordUser.id)
-    .single();
+    .maybeSingle();
 
+  if (playerError) throw new Error(`${discordUser.username}님의 계정 정보를 불러오지 못했습니다: ${playerError.message}`);
   if (!player) throw new Error(`${discordUser.username}님은 \`/계정등록\`을 먼저 해야 합니다.`);
 
-  const { data: cache } = await supabase
+  const { data: cache, error: cacheError } = await supabase
     .from('stats_cache')
     .select('*')
     .eq('discord_id', discordUser.id)
-    .single();
+    .maybeSingle();
+  // A cache read failure only costs a fresh lookup, so log it and continue.
+  if (cacheError) console.warn(`전적 캐시 조회 실패 (${discordUser.id}): ${cacheError.message}`);
 
   const cacheUpdatedAt = cache ? new Date(cache.updated_at).getTime() : 0;
   const isFresh = cache && cacheUpdatedAt >= SCORE_VERSION_UPDATED_AT && Date.now() - cacheUpdatedAt < 30 * 60 * 1000;

@@ -8,6 +8,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const commandsDir = path.join(__dirname, 'commands');
 const commandFiles = readdirSync(commandsDir).filter((f) => f.endsWith('.js'));
 
+const missing = ['DISCORD_TOKEN', 'DISCORD_CLIENT_ID'].filter((name) => !process.env[name]?.trim());
+if (missing.length) {
+  throw new Error(`필수 환경변수가 없습니다: ${missing.join(', ')}`);
+}
+
 const commands = [];
 for (const file of commandFiles) {
   const mod = await import(pathToFileURL(path.join(commandsDir, file)).href);

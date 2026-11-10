@@ -371,36 +371,6 @@ export async function execute(interaction) {
     if (showSkillUsage) {
       await interaction.followUp({ embeds: [skillUsageEmbed], flags: MessageFlags.Ephemeral });
     }
-    if (seasonId) {
-      const seasonReply = await interaction.followUp({
-        embeds: [getSeasonMatchEmbed()],
-        components: [getSeasonControls()],
-        fetchReply: true,
-      });
-      const seasonCollector = seasonReply.createMessageComponentCollector({ time: 2 * 60 * 1000 });
-
-      seasonCollector.on('collect', async (buttonInteraction) => {
-        if (buttonInteraction.user.id !== interaction.user.id) {
-          await buttonInteraction.reply({ content: '이 전적 조회를 실행한 사용자만 사용할 수 있습니다.', flags: MessageFlags.Ephemeral });
-          return;
-        }
-
-        if (buttonInteraction.customId.includes('date-order')) {
-          seasonSortMode = seasonSortMode === 'oldest' ? 'latest' : 'oldest';
-          seasonPageIndex = 0;
-        } else if (buttonInteraction.customId.includes('acs-order')) {
-          seasonSortMode = seasonSortMode === 'acs-low' ? 'acs-high' : 'acs-low';
-          seasonPageIndex = 0;
-        } else {
-          seasonPageIndex += buttonInteraction.customId.includes('next') ? 1 : -1;
-        }
-        await buttonInteraction.update({ embeds: [getSeasonMatchEmbed()], components: [getSeasonControls()] });
-      });
-
-      seasonCollector.on('end', async () => {
-        await seasonReply.edit({ components: [getSeasonControls(true)] }).catch(() => {});
-      });
-    }
     const reply = await interaction.fetchReply();
     const collector = reply.createMessageComponentCollector({ time: 2 * 60 * 1000 });
 

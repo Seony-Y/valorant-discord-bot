@@ -105,7 +105,14 @@ export async function execute(interaction) {
     return;
   }
 
-  const destinationChannel = await configureNewsNotification(interaction.guild, channel, hour, minute, channelMode);
+  let destinationChannel;
+  try {
+    destinationChannel = await configureNewsNotification(interaction.guild, channel, hour, minute, channelMode);
+  } catch (error) {
+    console.error(`소식 알림 설정 실패 (${interaction.guild.id}): ${error.message}`);
+    await interaction.editReply(`소식 알림을 설정하지 못했습니다: ${error.message}`);
+    return;
+  }
   await interaction.editReply(
     `<#${destinationChannel.id}> 채널에 매일 한국 시간 **${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}**부터 ` +
     '새로운 발로란트 공식 공지와 게임 업데이트를 전송합니다.'

@@ -28,18 +28,24 @@ export async function execute(interaction) {
 
   try {
     const account = await getAccount(name, tag);
+    // Store Henrik's canonical casing so it matches what match data returns.
+    const riotName = account.name ?? name;
+    const riotTag = account.tag ?? tag;
     const { error } = await supabase.from('players').upsert({
       discord_id: interaction.user.id,
-      riot_name: name,
-      riot_tag: tag,
+      riot_name: riotName,
+      riot_tag: riotTag,
       region,
       puuid: account.puuid,
     });
     if (error) throw error;
+    // Drop the power score cached for a previously registered account.
+    const { error: cacheError } = await supabase.from('stats_cache').delete().eq('discord_id', interaction.user.id);
+    if (cacheError) console.warn(`전적 캐시 삭제 실패 (${interaction.user.id}): ${cacheError.message}`);
 
     const embed = new EmbedBuilder()
       .setTitle('계정 등록 완료')
-      .setDescription(`**${name}#${tag}** (${region.toUpperCase()}) 계정이 등록되었습니다.`)
+      .setDescription(`**${riotName}#${riotTag}** (${region.toUpperCase()}) 계정이 등록되었습니다.`)
       .setColor(0x3ba7ff);
     await interaction.editReply({ embeds: [embed] });
   } catch (err) {
