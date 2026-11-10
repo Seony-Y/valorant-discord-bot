@@ -34,7 +34,7 @@ export async function execute(interaction) {
   }
 
   try {
-    const qrLogin = await startRiotQrLogin();
+    const qrLogin = await startRiotQrLogin(interaction.user.id);
     const image = await QRCode.toBuffer(qrLogin.loginUrl, { errorCorrectionLevel: 'M', margin: 1, width: 360 });
     const attachment = new AttachmentBuilder(image, { name: 'riot-login.png' });
     await interaction.editReply({
@@ -84,6 +84,10 @@ export async function execute(interaction) {
       attachments: [],
     });
   } catch (err) {
+    if (err.code === 'RIOT_QR_CANCELLED') {
+      await interaction.editReply({ content: err.message, attachments: [] });
+      return;
+    }
     await interaction.editReply({ content: `QR 로그인에 실패했습니다: ${err.message}`, attachments: [] });
   }
 }

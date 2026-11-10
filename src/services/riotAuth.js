@@ -24,6 +24,16 @@ const RIOT_REQUEST_TIMEOUT_MS = 15_000;
 // valorant-api.com may add a missing image later, so misses are only cached briefly.
 const MEDIA_IMAGE_MISS_TTL_MS = 10 * 60 * 1000;
 const http = axios.create({ timeout: RIOT_REQUEST_TIMEOUT_MS });
+const CLIENT_PLATFORM = Buffer.from(
+  JSON.stringify({
+    platformType: 'PC',
+    platformOS: 'Windows',
+    platformOSVersion: '10.0.19042.1.256.64bit',
+    platformChipset: 'Unknown',
+  })
+).toString('base64');
+// Last known Riot Client build; only used when valorant-api.com's version endpoint is unreachable.
+const FALLBACK_RIOT_CLIENT_BUILD = '97.0.1.2366';
 const pendingQrLogins = new Map();
 const clientVersionCache = new Map();
 const riotContentCache = new Map();
@@ -73,6 +83,26 @@ async function getRiotClientVersion(shard) {
   }
   clientVersionCache.set(region, { version, updatedAt: Date.now() });
   return version;
+}
+
+let riotClientBuildCache;
+
+// The QR login's client-config request advertises a Riot Client build; a stale hardcoded one risks being rejected after Riot updates.
+async function getRiotClientBuild() {
+  if (riotClientBuildCache && Date.now() - riotClientBuildCache.updatedAt < CLIENT_VERSION_CACHE_TTL_MS) {
+    return riotClientBuildCache.build;
+  }
+  try {
+    const { data } = await http.get('https://valorant-api.com/v1/version');
+    const build = data.data?.riotClientBuild;
+    if (build) {
+      riotClientBuildCache = { build, updatedAt: Date.now() };
+      return build;
+    }
+  } catch (error) {
+    console.warn(`Riot 클라이언트 빌드 조회 실패: ${error.message}`);
+  }
+  return riotClientBuildCache?.build ?? FALLBACK_RIOT_CLIENT_BUILD;
 }
 
 async function requestWithCurrentClientVersion(shard, request) {
@@ -180,11 +210,18 @@ function extractRotatedSsid(setCookieHeaders, previousSsid) {
   return null;
 }
 
-export async function startRiotQrLogin(countryCode = process.env.RIOT_QR_LOCALE ?? 'ko-KR') {
+/** ownerId: the Discord user; starting a new login cancels that user's previous pending one so sessions can't pile up. */
+export async function startRiotQrLogin(ownerId = null, countryCode = process.env.RIOT_QR_LOCALE ?? 'ko-KR') {
+  if (ownerId) {
+    for (const [pendingId, pending] of pendingQrLogins) {
+      if (pending.ownerId === ownerId) pendingQrLogins.set(pendingId, { ...pending, cancelled: true });
+    }
+  }
   const { client, jar } = newSession();
   const sdkSid = crypto.randomUUID();
   const headers = qrHeaders(sdkSid, countryCode);
   const region = countryCode.toUpperCase().startsWith('KO') ? 'KR' : 'NA';
+  const clientBuild = await getRiotClientBuild();
 
   await client.get('https://clientconfig.rpg.riotgames.com/api/v1/config/public', {
     headers: {
@@ -195,7 +232,7 @@ export async function startRiotQrLogin(countryCode = process.env.RIOT_QR_LOCALE 
       os: 'windows',
       region,
       app: 'Riot Client',
-      version: '97.0.1.2366',
+      version: clientBuild,
       patchline: 'KeystoneFoundationLiveWin',
     },
   });
@@ -219,7 +256,7 @@ export async function startRiotQrLogin(countryCode = process.env.RIOT_QR_LOCALE 
   }
 
   const id = crypto.randomUUID();
-  pendingQrLogins.set(id, { client, jar, sdkSid, countryCode, expiresAt: Date.now() + QR_LOGIN_TIMEOUT_MS });
+  pendingQrLogins.set(id, { client, jar, sdkSid, countryCode, ownerId, expiresAt: Date.now() + QR_LOGIN_TIMEOUT_MS });
   setTimeout(() => pendingQrLogins.delete(id), QR_LOGIN_TIMEOUT_MS).unref();
 
   return {
@@ -273,6 +310,12 @@ export async function checkRiotQrLogin(id) {
   if (!pending || pending.expiresAt <= Date.now()) {
     pendingQrLogins.delete(id);
     throw new Error('QR 로그인 시간이 만료되었습니다. `/상점연동`을 다시 실행해주세요.');
+  }
+  if (pending.cancelled) {
+    pendingQrLogins.delete(id);
+    const error = new Error('새 `/상점연동` 요청이 시작되어 이전 QR 로그인은 취소되었습니다.');
+    error.code = 'RIOT_QR_CANCELLED';
+    throw error;
   }
 
   let data;
@@ -368,15 +411,6 @@ async function completeAuthorization(client, headers, authData) {
 }
 
 export async function getRiotDisplayName({ accessToken, entitlementsToken, puuid, shard }) {
-  const clientPlatform = Buffer.from(
-    JSON.stringify({
-      platformType: 'PC',
-      platformOS: 'Windows',
-      platformOSVersion: '10.0.19042.1.256.64bit',
-      platformChipset: 'Unknown',
-    })
-  ).toString('base64');
-
   const { data } = await requestWithCurrentClientVersion(shard, (clientVersion) => http.put(
     `https://pd.${shard}.a.pvp.net/name-service/v2/players`,
     [puuid],
@@ -385,7 +419,7 @@ export async function getRiotDisplayName({ accessToken, entitlementsToken, puuid
         Authorization: `Bearer ${accessToken}`,
         'X-Riot-Entitlements-JWT': entitlementsToken,
         'X-Riot-ClientVersion': clientVersion,
-        'X-Riot-ClientPlatform': clientPlatform,
+        'X-Riot-ClientPlatform': CLIENT_PLATFORM,
       },
     }
   )).catch(throwMappedRiotAuthError);
@@ -397,15 +431,6 @@ export async function getRiotDisplayName({ accessToken, entitlementsToken, puuid
 
 /** Fetch the raw storefront (bundle/offer UUIDs, not human names). */
 export async function getStorefront({ accessToken, entitlementsToken, puuid, shard }) {
-  const clientPlatform = Buffer.from(
-    JSON.stringify({
-      platformType: 'PC',
-      platformOS: 'Windows',
-      platformOSVersion: '10.0.19042.1.256.64bit',
-      platformChipset: 'Unknown',
-    })
-  ).toString('base64');
-
   const { data } = await requestWithCurrentClientVersion(shard, (clientVersion) => http.post(
     `https://pd.${shard}.a.pvp.net/store/v3/storefront/${puuid}`,
     {},
@@ -413,7 +438,7 @@ export async function getStorefront({ accessToken, entitlementsToken, puuid, sha
       headers: {
         Authorization: `Bearer ${accessToken}`,
         'X-Riot-Entitlements-JWT': entitlementsToken,
-        'X-Riot-ClientPlatform': clientPlatform,
+        'X-Riot-ClientPlatform': CLIENT_PLATFORM,
         'X-Riot-ClientVersion': clientVersion,
       },
     }
@@ -447,22 +472,13 @@ export async function getRiotContent(session) {
 }
 
 async function fetchRiotContent({ accessToken, entitlementsToken, shard }) {
-  const clientPlatform = Buffer.from(
-    JSON.stringify({
-      platformType: 'PC',
-      platformOS: 'Windows',
-      platformOSVersion: '10.0.19042.1.256.64bit',
-      platformChipset: 'Unknown',
-    })
-  ).toString('base64');
-
   const { data } = await requestWithCurrentClientVersion(shard, (clientVersion) => http.get(
     `https://shared.${shard}.a.pvp.net/content-service/v3/content`,
     {
       headers: {
         Authorization: `Bearer ${accessToken}`,
         'X-Riot-Entitlements-JWT': entitlementsToken,
-        'X-Riot-ClientPlatform': clientPlatform,
+        'X-Riot-ClientPlatform': CLIENT_PLATFORM,
         'X-Riot-ClientVersion': clientVersion,
       },
     }
@@ -505,6 +521,14 @@ export async function searchWeaponSkins(query = '') {
     .filter((skin) => skin.displayName?.toLocaleLowerCase('ko-KR').includes(normalizedQuery))
     .slice(0, 25)
     .map((skin) => ({ id: skin.uuid, name: skin.displayName, image: resolveSkinImage(skin) }));
+}
+
+/** Exact (case-insensitive) skin name lookup, used to backfill favorites saved before item_id existed. */
+export async function findWeaponSkinByName(name) {
+  const { skins } = await getValorantAssets();
+  const normalizedName = name.trim().toLocaleLowerCase('ko-KR');
+  const skin = skins.find((entry) => entry.displayName?.toLocaleLowerCase('ko-KR') === normalizedName);
+  return skin ? { id: skin.uuid, name: skin.displayName } : null;
 }
 
 // Index every id-bearing node once per content object; the catalogs are shared across requests via their caches.

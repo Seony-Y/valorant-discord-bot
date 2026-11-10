@@ -1,19 +1,24 @@
-import { decryptCredential, restoreRiotStoreSession } from './riotAuth.js';
+import { decryptCredential, findWeaponSkinByName, restoreRiotStoreSession } from './riotAuth.js';
 import { supabase } from './supabase.js';
 import { AttachmentBuilder } from 'discord.js';
 import { createStorePages, VALORANT_POINTS_IMAGE } from '../commands/store.js';
 import { persistRotatedSsid } from './storeAccounts.js';
 import { formatKstDate, getKstDate, getKstDateParts, toMinuteOfDay } from './kstTime.js';
+import { getBotOwnerIds } from './admin.js';
+import { onUnresolvedBundle } from './valorantAssets.js';
 
 const NOTIFICATION_INTERVAL_MS = 60 * 1000;
 const RIOT_MAINTENANCE_RETRY_MS = 15 * 60 * 1000;
 const STORE_NOTIFICATION_RETRY_MS = 15 * 60 * 1000;
 const DISCORD_CANNOT_DM_USER = 50007;
+const MAX_EMBEDS_PER_MESSAGE = 10;
 let notificationTimer;
 let storeNotificationRunning = false;
 const storeNotificationRetryAfter = new Map();
 let favoriteRefreshRunning = false;
 let favoriteRefreshRetryAfter = 0;
+let favoriteItemIdBackfillDone = false;
+let unresolvedBundleListenerRegistered = false;
 
 async function getFavoriteMatches(discordId, account, favorites) {
   const ssid = decryptCredential({ encrypted: account.encrypted_ssid, iv: account.iv, authTag: account.auth_tag });
@@ -21,6 +26,45 @@ async function getFavoriteMatches(discordId, account, favorites) {
   await persistRotatedSsid(discordId, account.account_name, session);
   const { favoriteMatches, favoriteEmbeds } = await createStorePages(session, favorites);
   return { favoriteMatches, favoriteEmbeds };
+}
+
+/**
+ * Check each account's current store for the favorites, DM the user once about every hit and mark those favorites notified.
+ * Expired sessions are collected instead of thrown so one stale account doesn't block the rest.
+ */
+async function notifyFavoriteMatches(client, userId, accounts, favorites, today) {
+  const matchedByAccount = [];
+  const expiredAccounts = [];
+  let checkedAccountCount = 0;
+  for (const account of accounts) {
+    try {
+      const { favoriteMatches: matches, favoriteEmbeds } = await getFavoriteMatches(userId, account, favorites);
+      checkedAccountCount += 1;
+      if (matches.length) matchedByAccount.push({ accountName: account.account_name, matches, embeds: favoriteEmbeds });
+    } catch (error) {
+      if (error.code !== 'RIOT_SESSION_EXPIRED') throw error;
+      expiredAccounts.push(account.account_name);
+    }
+  }
+
+  if (matchedByAccount.length) {
+    const user = await client.users.fetch(userId);
+    const lines = matchedByAccount.map(({ accountName, matches }) =>
+      `등장 계정: **${accountName}**\n즐겨찾기한 스킨: ${matches.map((name) => `**${name}**`).join(', ')}`);
+    await user.send({
+      content: `⭐ 즐겨찾기한 스킨이 오늘 상점에 등장했습니다.\n\n${lines.join('\n\n')}`,
+      embeds: matchedByAccount.flatMap(({ embeds }) => embeds).slice(0, MAX_EMBEDS_PER_MESSAGE),
+      files: [new AttachmentBuilder(VALORANT_POINTS_IMAGE, { name: 'vp_img.webp' })],
+    });
+    const matchedNames = [...new Set(matchedByAccount.flatMap(({ matches }) => matches))];
+    const { error: notifiedError } = await supabase
+      .from('store_favorites')
+      .update({ last_notified_on: today })
+      .eq('discord_id', userId)
+      .in('item_name', matchedNames);
+    if (notifiedError) throw notifiedError;
+  }
+  return { matchedByAccount, expiredAccounts, checkedAccountCount };
 }
 
 export async function checkFavoritesAfterAdd(client, userId, favorites) {
@@ -48,28 +92,14 @@ export async function checkFavoritesAfterAdd(client, userId, favorites) {
     : [accounts.find((account) => account.is_default) ?? accounts[0]];
   if (!targetAccounts.length) return { status: 'no-account' };
 
-  const matchedByAccount = [];
-  const expiredAccounts = [];
-  let checkedAccountCount = 0;
-  for (const account of targetAccounts) {
-    try {
-      const { favoriteMatches: matches, favoriteEmbeds } = await getFavoriteMatches(userId, account, favorites);
-      checkedAccountCount += 1;
-      if (matches.length) matchedByAccount.push({
-        accountName: account.account_name,
-        matches,
-        embeds: favoriteEmbeds,
-      });
-    } catch (error) {
-      if (error.code !== 'RIOT_SESSION_EXPIRED') throw error;
-      expiredAccounts.push(account.account_name);
-    }
-  }
+  const today = getKstDate();
+  const { matchedByAccount, expiredAccounts, checkedAccountCount } =
+    await notifyFavoriteMatches(client, userId, targetAccounts, favorites, today);
   if (!checkedAccountCount) return { status: 'session-expired', accounts: expiredAccounts };
 
   const { error: updateError } = await supabase
     .from('store_favorites')
-    .update({ last_checked_on: getKstDate() })
+    .update({ last_checked_on: today })
     .eq('discord_id', userId)
     .in('item_name', itemNames);
   if (updateError) throw updateError;
@@ -78,22 +108,6 @@ export async function checkFavoritesAfterAdd(client, userId, favorites) {
       ? { status: 'scheduled', times: scheduledTimes, expiredAccounts }
       : { status: 'waiting', expiredAccounts };
   }
-
-  const matchedNames = [...new Set(matchedByAccount.flatMap(({ matches }) => matches))];
-  const user = await client.users.fetch(userId);
-  const lines = matchedByAccount.map(({ accountName, matches }) =>
-    `등장 계정: **${accountName}**\n즐겨찾기한 스킨: ${matches.map((name) => `**${name}**`).join(', ')}`);
-  await user.send({
-    content: `⭐ 즐겨찾기한 스킨이 오늘 상점에 등장했습니다.\n\n${lines.join('\n\n')}`,
-    embeds: matchedByAccount.flatMap(({ embeds }) => embeds).slice(0, 10),
-    files: [new AttachmentBuilder(VALORANT_POINTS_IMAGE, { name: 'vp_img.webp' })],
-  });
-  const { error: notifiedError } = await supabase
-    .from('store_favorites')
-    .update({ last_notified_on: getKstDate() })
-    .eq('discord_id', userId)
-    .in('item_name', matchedNames);
-  if (notifiedError) throw notifiedError;
   return { status: 'notified', matches: matchedByAccount, times: scheduledTimes, expiredAccounts };
 }
 
@@ -117,14 +131,14 @@ async function sendStoreNotification(client, notification) {
   const today = getKstDate();
   const pendingFavorites = (favorites ?? [])
     .filter((favorite) => favorite.last_notified_on !== today);
-  const { pages, favoriteMatches } = await createStorePages(session, pendingFavorites);
+  const { pages, favoriteMatches, nightMarketFavoriteEmbeds } = await createStorePages(session, pendingFavorites);
   const user = await client.users.fetch(notification.discord_id);
   const favoriteMessage = favoriteMatches.length
     ? `\n\n⭐ 즐겨찾기한 스킨이 오늘 상점에 등장했습니다.\n등장 계정: **${account.account_name}**\n즐겨찾기한 스킨: ${favoriteMatches.map((name) => `**${name}**`).join(', ')}`
     : '';
   await user.send({
     content: `오늘의 상점 · **${account.account_name}**${account.riot_name && account.riot_tag ? ` · ${account.riot_name}#${account.riot_tag}` : ''}${favoriteMessage}`,
-    embeds: pages[0]?.embeds ?? [],
+    embeds: [...(pages[0]?.embeds ?? []), ...nightMarketFavoriteEmbeds].slice(0, MAX_EMBEDS_PER_MESSAGE),
     files: [new AttachmentBuilder(VALORANT_POINTS_IMAGE, { name: 'vp_img.webp' })],
   });
   if (favoriteMatches.length) {
@@ -238,27 +252,11 @@ async function processFavoriteRefreshNotifications(client) {
     const userFavorites = favorites.filter((favorite) => favorite.discord_id === userId);
     const itemNames = userFavorites.map((favorite) => favorite.item_name);
     try {
+      // Users with a scheduled store DM already get favorite hits there.
       if (!scheduledUserIds.has(userId)) {
-        const matchedByAccount = [];
-        const expiredAccounts = [];
-        let checkedAccountCount = 0;
-        for (const account of (accounts ?? []).filter((entry) => entry.discord_id === userId)) {
-          try {
-            const { favoriteMatches: matches, favoriteEmbeds } = await getFavoriteMatches(userId, account, userFavorites);
-            checkedAccountCount += 1;
-            if (matches.length) matchedByAccount.push({
-              accountName: account.account_name,
-              matches,
-              embeds: favoriteEmbeds,
-            });
-          } catch (error) {
-            if (error.code === 'RIOT_SESSION_EXPIRED') {
-              expiredAccounts.push(account.account_name);
-              continue;
-            }
-            throw error;
-          }
-        }
+        const userAccounts = (accounts ?? []).filter((entry) => entry.discord_id === userId);
+        const { expiredAccounts, checkedAccountCount } =
+          await notifyFavoriteMatches(client, userId, userAccounts, userFavorites, today);
         if (!checkedAccountCount && expiredAccounts.length) {
           try {
             const user = await client.users.fetch(userId);
@@ -268,23 +266,6 @@ async function processFavoriteRefreshNotifications(client) {
           } catch (dmError) {
             console.warn(`세션 만료 안내 DM 실패 (${userId}): ${dmError.message}`);
           }
-        }
-        if (matchedByAccount.length) {
-          const user = await client.users.fetch(userId);
-          const lines = matchedByAccount.map(({ accountName, matches }) =>
-            `등장 계정: **${accountName}**\n즐겨찾기한 스킨: ${matches.map((name) => `**${name}**`).join(', ')}`);
-          await user.send({
-            content: `⭐ 즐겨찾기한 스킨이 오늘 상점에 등장했습니다.\n\n${lines.join('\n\n')}`,
-            embeds: matchedByAccount.flatMap(({ embeds }) => embeds).slice(0, 10),
-            files: [new AttachmentBuilder(VALORANT_POINTS_IMAGE, { name: 'vp_img.webp' })],
-          });
-          const matchedNames = [...new Set(matchedByAccount.flatMap(({ matches }) => matches))];
-          const { error: notifiedError } = await supabase
-            .from('store_favorites')
-            .update({ last_notified_on: today })
-            .eq('discord_id', userId)
-            .in('item_name', matchedNames);
-          if (notifiedError) throw notifiedError;
         }
       }
 
@@ -314,11 +295,77 @@ function runFavoriteRefreshNotifications(client) {
     });
 }
 
+// Favorites saved before item_id existed only match by name; fill in the skin uuid once so they survive translation changes.
+async function backfillFavoriteItemIds() {
+  const { data: favorites, error } = await supabase
+    .from('store_favorites')
+    .select('discord_id, item_name')
+    .is('item_id', null);
+  if (error) {
+    console.warn(`즐겨찾기 item_id 보정 조회 실패: ${error.message}`);
+    return false;
+  }
+
+  let filled = 0;
+  for (const favorite of favorites ?? []) {
+    const skin = await findWeaponSkinByName(favorite.item_name);
+    if (!skin) continue;
+    const { error: updateError } = await supabase
+      .from('store_favorites')
+      .update({ item_id: skin.id })
+      .eq('discord_id', favorite.discord_id)
+      .eq('item_name', favorite.item_name);
+    if (updateError) {
+      console.warn(`즐겨찾기 item_id 보정 실패 (${favorite.discord_id}): ${updateError.message}`);
+      continue;
+    }
+    filled += 1;
+  }
+  if (filled) console.info(`즐겨찾기 item_id 보정 완료: ${filled}/${favorites.length}개`);
+  return true;
+}
+
+function runFavoriteItemIdBackfill() {
+  if (favoriteItemIdBackfillDone) return;
+  favoriteItemIdBackfillDone = true;
+  backfillFavoriteItemIds()
+    .then((done) => {
+      if (!done) favoriteItemIdBackfillDone = false;
+    })
+    .catch((error) => {
+      favoriteItemIdBackfillDone = false;
+      console.warn(`즐겨찾기 item_id 보정 실패: ${error.message}`);
+    });
+}
+
+// Tell bot owners the first time the store shows a bundle valorant-api.com doesn't know, so they can fill it in with /번들정보.
+function registerUnresolvedBundleNotifier(client) {
+  if (unresolvedBundleListenerRegistered) return;
+  unresolvedBundleListenerRegistered = true;
+  onUnresolvedBundle(async ({ bundleId, itemNames }) => {
+    const message = '🆕 valorant-api.com에 아직 없는 번들이 상점에 나타났습니다.\n' +
+      `번들 ID: \`${bundleId}\`\n` +
+      (itemNames.length ? `구성품: ${itemNames.slice(0, 6).join(', ')}\n` : '') +
+      '`/번들정보 설정`으로 이름과 이미지를 지정할 수 있습니다.';
+    for (const ownerId of getBotOwnerIds()) {
+      try {
+        const owner = await client.users.fetch(ownerId);
+        await owner.send(message);
+      } catch (error) {
+        console.warn(`신규 번들 운영자 DM 실패 (${ownerId}): ${error.message}`);
+      }
+    }
+  });
+}
+
 export function startStoreNotificationScheduler(client) {
   if (notificationTimer) clearInterval(notificationTimer);
+  registerUnresolvedBundleNotifier(client);
+  runFavoriteItemIdBackfill();
   runStoreNotifications(client);
   runFavoriteRefreshNotifications(client);
   notificationTimer = setInterval(() => {
+    runFavoriteItemIdBackfill();
     runStoreNotifications(client);
     runFavoriteRefreshNotifications(client);
   }, NOTIFICATION_INTERVAL_MS);

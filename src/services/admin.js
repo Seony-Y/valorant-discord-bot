@@ -4,6 +4,10 @@ const botOwnerIds = new Set(
   (process.env.BOT_OWNER_IDS ?? '').split(',').map((id) => id.trim()).filter(Boolean)
 );
 
+export function getBotOwnerIds() {
+  return [...botOwnerIds];
+}
+
 export function requireServerManager(interaction) {
   if (!interaction.guild) return '서버 안에서만 사용할 수 있는 관리자 명령어입니다.';
   if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {

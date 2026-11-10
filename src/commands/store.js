@@ -328,6 +328,9 @@ export async function createStorePages(session, favorites = []) {
     .filter(({ favorite }) => favorite);
   const favoriteMatches = [...new Set(favoriteItems.map(({ favorite }) => favorite.name))];
   const favoriteEmbeds = makeItemEmbeds(favoriteItems.map(({ item }) => item));
+  // The daily store page is already in the scheduled DM; night market hits need their own cards there.
+  const nightMarketFavorites = nightMarketItems.filter((item) => findFavorite(item));
+  const nightMarketFavoriteEmbeds = nightMarketFavorites.length ? makeItemEmbeds(nightMarketFavorites) : [];
 
   const pages = [
     dailyPage,
@@ -335,7 +338,7 @@ export async function createStorePages(session, favorites = []) {
     ...bundlePages,
   ];
   if (nightMarketPage) pages.push(nightMarketPage);
-  return { pages, hasNightMarket: nightMarketDetails.length > 0, favoriteMatches, favoriteEmbeds };
+  return { pages, hasNightMarket: nightMarketDetails.length > 0, favoriteMatches, favoriteEmbeds, nightMarketFavoriteEmbeds };
 }
 
 export const data = new SlashCommandBuilder()

@@ -15,6 +15,7 @@ let missingAssetRefreshedAt = 0;
 let bundleOverridesCache;
 let bundleOverridesCachedAt = 0;
 const unresolvedBundles = new Map();
+const unresolvedBundleListeners = new Set();
 
 async function fetchAssetList(endpoint) {
   const { data } = await axios.get(`https://valorant-api.com/v1/${endpoint}?language=ko-KR`, { timeout: 15_000 });
@@ -117,15 +118,26 @@ export function invalidateBundleOverrides() {
   bundleOverridesCachedAt = 0;
 }
 
+export function onUnresolvedBundle(listener) {
+  unresolvedBundleListeners.add(listener);
+}
+
 export function recordUnresolvedBundle(bundleId, itemNames = []) {
   if (!bundleId) return;
   const existing = unresolvedBundles.get(bundleId);
-  unresolvedBundles.set(bundleId, {
+  const entry = {
     bundleId,
     itemNames: itemNames.length ? itemNames : existing?.itemNames ?? [],
     firstSeenAt: existing?.firstSeenAt ?? new Date(),
     lastSeenAt: new Date(),
-  });
+  };
+  unresolvedBundles.set(bundleId, entry);
+  if (existing) return;
+  for (const listener of unresolvedBundleListeners) {
+    Promise.resolve()
+      .then(() => listener(entry))
+      .catch((error) => console.warn(`신규 번들 알림 처리 실패: ${error.message}`));
+  }
 }
 
 export function forgetUnresolvedBundle(bundleId) {
