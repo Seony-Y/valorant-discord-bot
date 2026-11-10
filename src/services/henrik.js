@@ -62,6 +62,14 @@ export async function getMMR(region, name, tag) {
     throw error;
   }
   const current = data.data;
+  const currentTier = current.current_data?.currenttierpatched ?? current.currenttierpatched;
+  const result = {
+    currentTier,
+    currentElo: current.current_data?.elo ?? current.elo,
+    peakTier: current.highest_rank?.patched_tier ?? null,
+  };
+  // v2 mmr already carries the peak; only fall back to the (slow, rate-limited) history call when it's missing.
+  if (result.peakTier) return result;
 
   let historyRes;
   try {
@@ -80,19 +88,15 @@ export async function getMMR(region, name, tag) {
     const rank = entry.currenttierpatched;
     return best === null || (entry.elo ?? 0) > best.elo ? { rank, elo: entry.elo ?? 0 } : best;
   }, null);
-
-  return {
-    currentTier: current.current_data?.currenttierpatched ?? current.currenttierpatched,
-    currentElo: current.current_data?.elo ?? current.elo,
-    peakTier: current.highest_rank?.patched_tier ?? peak?.rank ?? current.current_data?.currenttierpatched ?? current.currenttierpatched,
-  };
+  return { ...result, peakTier: peak?.rank ?? currentTier };
 }
 
-async function getMatches(region, name, tag, size) {
+// v3 matches returns at most 10 games regardless of `size`, so callers filter by mode on the server instead of widening.
+async function getMatches(region, name, tag, mode) {
   try {
     const { data } = await client.get(
       `/valorant/v3/matches/${region}/${encodeURIComponent(name)}/${encodeURIComponent(tag)}`,
-      { params: { size } }
+      { params: { size: 10, mode } }
     );
     return data.data ?? [];
   } catch (error) {
@@ -239,10 +243,16 @@ function normalizeAbilityCasts(abilityCasts = {}) {
   return normalized;
 }
 
-export async function getMatchSummary(region, name, tag, size = 20, seasonId, matchLimit = 10) {
-  const matches = (await getMatches(region, name, tag, size))
+/** Summary of the latest competitive + unrated games (other modes would skew ACS/KDA). */
+export async function getMatchSummary(region, name, tag, seasonId, matchLimit = 10) {
+  const [competitive, unrated] = await Promise.all([
+    getMatches(region, name, tag, 'competitive'),
+    getMatches(region, name, tag, 'unrated'),
+  ]);
+  const matches = [...competitive, ...unrated]
     .filter((match) => ['competitive', 'unrated'].includes(match.metadata?.mode?.toLowerCase()))
     .filter((match) => !seasonId || match.metadata?.season_id === seasonId)
+    .sort((left, right) => (right.metadata?.game_start ?? 0) - (left.metadata?.game_start ?? 0))
     .slice(0, matchLimit);
 
   let kills = 0, deaths = 0, assists = 0;

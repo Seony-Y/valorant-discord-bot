@@ -11,7 +11,6 @@ import { computePowerScore } from '../services/scoring.js';
 import { supabase } from '../services/supabase.js';
 import {
   getLatestAvailableMatchSummary,
-  MATCH_LOOKUP_SIZES,
   MATCHES_TO_CONSIDER,
   savePowerScoreCache,
 } from '../services/teamPower.js';
@@ -198,21 +197,16 @@ export async function execute(interaction) {
       return;
     }
 
-    let mmr = null;
-    let matchSummary = null;
+    // Tier and match lookups are independent, so run them together.
+    const [mmrResult, matchSummaryResult] = await Promise.allSettled([
+      getMMR(player.region, player.riot_name, player.riot_tag),
+      getLatestAvailableMatchSummary(player.region, player.riot_name, player.riot_tag),
+    ]);
+    const mmr = mmrResult.status === 'fulfilled' ? mmrResult.value : null;
+    const matchSummary = matchSummaryResult.status === 'fulfilled' ? matchSummaryResult.value : null;
     const lookupErrors = [];
-
-    try {
-      mmr = await getMMR(player.region, player.riot_name, player.riot_tag);
-    } catch (error) {
-      lookupErrors.push(`티어: ${error.message}`);
-    }
-
-    try {
-      matchSummary = await getLatestAvailableMatchSummary(player.region, player.riot_name, player.riot_tag);
-    } catch (error) {
-      lookupErrors.push(`최근 전적: ${error.message}`);
-    }
+    if (mmrResult.status === 'rejected') lookupErrors.push(`티어: ${mmrResult.reason.message}`);
+    if (matchSummaryResult.status === 'rejected') lookupErrors.push(`최근 전적: ${matchSummaryResult.reason.message}`);
 
     if (!mmr && !matchSummary) {
       await interaction.editReply(`조회 가능한 전적이 없습니다.\n${lookupErrors.join('\n')}`);
@@ -266,7 +260,7 @@ export async function execute(interaction) {
     const matchSummaryDescription = !matchSummary
       ? '최근 매치 데이터를 찾지 못했습니다.'
       : matchSummary.gamesConsidered < MATCHES_TO_CONSIDER
-        ? `최근 ${MATCH_LOOKUP_SIZES.at(-1)}경기 조회 결과, 경쟁전/일반게임 ${matchSummary.gamesConsidered}경기만 확인되어 해당 기록으로 측정했습니다.`
+        ? `최근 경쟁전/일반게임 기록이 ${matchSummary.gamesConsidered}경기만 확인되어 해당 기록으로 측정했습니다.`
         : `최근 ${MATCHES_TO_CONSIDER}경기 기준 전적 요약`;
 
     const skillUsageLines = matchSummary?.matchDetails?.length

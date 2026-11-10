@@ -4,8 +4,23 @@ import { supabase } from './supabase.js';
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const SCORE_VERSION_UPDATED_AT = new Date('2026-10-29T00:00:00.000Z').getTime();
-export const MATCH_LOOKUP_SIZES = [20, 50, 100];
 export const MATCHES_TO_CONSIDER = 10;
+// Henrik allows roughly 20 requests a minute; scoring a whole lobby at once just turns into stacked 429 waits.
+const SCORE_LOOKUP_CONCURRENCY = 3;
+
+/** Score every Discord user with at most SCORE_LOOKUP_CONCURRENCY lookups in flight; keeps input order. */
+export async function getOrRefreshPowerScores(discordUsers) {
+  const results = new Array(discordUsers.length);
+  let next = 0;
+  async function worker() {
+    while (next < discordUsers.length) {
+      const index = next++;
+      results[index] = await getOrRefreshPowerScore(discordUsers[index]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(SCORE_LOOKUP_CONCURRENCY, discordUsers.length) }, worker));
+  return results;
+}
 
 async function retryRateLimited(operation) {
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -22,24 +37,12 @@ async function retryRateLimited(operation) {
 
 /**
  * Latest competitive/unrated match summary (deathmatch-style modes would skew ACS/KDA).
- * Widens the lookup until MATCHES_TO_CONSIDER games are found, else returns the widest partial result.
+ * May cover fewer than MATCHES_TO_CONSIDER games when Henrik has no more recent ones in those modes.
  */
 export async function getLatestAvailableMatchSummary(region, name, tag) {
-  let lastError;
-  let partialSummary;
-  for (const size of MATCH_LOOKUP_SIZES) {
-    try {
-      const summary = await retryRateLimited(() => getMatchSummary(region, name, tag, size));
-      if (summary.gamesConsidered >= MATCHES_TO_CONSIDER) return summary;
-      if (summary.gamesConsidered > 0) partialSummary = summary;
-    } catch (error) {
-      lastError = error;
-      if (error?.response?.status && error.response.status !== 404 && error.response.status !== 429) throw error;
-    }
-    if (size !== MATCH_LOOKUP_SIZES.at(-1)) await sleep(1_000);
-  }
-  if (partialSummary) return partialSummary;
-  throw lastError ?? new Error('조회 가능한 최근 매치 기록이 없습니다.');
+  const summary = await retryRateLimited(() => getMatchSummary(region, name, tag, undefined, MATCHES_TO_CONSIDER));
+  if (!summary.gamesConsidered) throw new Error('조회 가능한 최근 경쟁전/일반게임 기록이 없습니다.');
+  return summary;
 }
 
 export async function savePowerScoreCache(discordId, { mmr, matchSummary, powerScore }) {

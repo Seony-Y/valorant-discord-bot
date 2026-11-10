@@ -13,7 +13,7 @@ import {
   TextInputStyle,
 } from 'discord.js';
 import { balanceTeams } from '../services/teamBalancer.js';
-import { getOrRefreshPowerScore, getPowerScoreForRiotAccount } from '../services/teamPower.js';
+import { getOrRefreshPowerScores, getPowerScoreForRiotAccount } from '../services/teamPower.js';
 import { supabase } from '../services/supabase.js';
 
 const MAX_PLAYERS = 15;
@@ -373,7 +373,7 @@ async function handleManualMode(interaction, thread, teamCount) {
       balancing = true;
       await buttonInteraction.deferUpdate();
       try {
-        const scored = await Promise.all([...participants.values()].map(getOrRefreshPowerScore));
+        const scored = await getOrRefreshPowerScores([...participants.values()]);
         const result = balanceTeams(scored, teamCount);
         collector.stop('balanced');
         await lobbyMessage.edit({
