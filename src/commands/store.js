@@ -215,7 +215,9 @@ function buildViewPayload(view) {
       .setDisabled(!view.hasNightMarket)
   );
   return {
-    content: `상점 계정: **${view.accountName}**${view.riotName && view.riotTag ? ` · ${view.riotName}#${view.riotTag}` : ''}`,
+    content: `상점 계정: **${view.accountName}**${view.riotName && view.riotTag ? ` · ${view.riotName}#${view.riotTag}` : ''}
+` +
+      `📄 **${page.label}** (${view.index + 1}/${view.pages.length})`,
     embeds: page.embeds,
     components: [row],
     files: [new AttachmentBuilder(VALORANT_POINTS_IMAGE, { name: 'vp_img.webp' })],
@@ -295,16 +297,15 @@ export async function createStorePages(session, favorites = []) {
         originalCost: itemEntries[index].BasePrice,
         discountPercent: itemEntries[index].DiscountPercent,
       }));
-      return {
-        embeds: makeBundleEmbeds(
-          bundle,
-          items,
-          source.TotalDiscountedCost ?? source.TotalBaseCost,
-          source.TotalBaseCost,
-          source.TotalDiscountPercent,
-          { startsAt, endsAt },
-        ),
-      };
+      const embeds = makeBundleEmbeds(
+        bundle,
+        items,
+        source.TotalDiscountedCost ?? source.TotalBaseCost,
+        source.TotalBaseCost,
+        source.TotalDiscountPercent,
+        { startsAt, endsAt },
+      );
+      return { label: `번들 · ${embeds[0]?.data?.title ?? '번들'}`, embeds };
     })),
   ]);
   const dailyPrices = getPriceByRewardId(dailyOffers);
@@ -313,9 +314,9 @@ export async function createStorePages(session, favorites = []) {
   const dailyItems = offers.map((offer, index) => ({ ...offer, cost: dailyPrices.get(offerIds[index]) }));
   const nightMarketItems = nightMarketOffers.map((offer, index) => ({ ...offer, ...nightMarketDetails[index] }));
   const [dailyPage, accessoryPage, nightMarketPage] = [
-    { embeds: makeItemEmbeds(dailyItems) },
-    { embeds: makeItemEmbeds(accessories.map((accessory, index) => ({ ...accessory, cost: accessoryPrices.get(accessoryIds[index]) }))) },
-    nightMarketDetails.length ? { embeds: makeItemEmbeds(nightMarketItems) } : null,
+    { label: '일일 상점', embeds: makeItemEmbeds(dailyItems) },
+    { label: '액세서리', embeds: makeItemEmbeds(accessories.map((accessory, index) => ({ ...accessory, cost: accessoryPrices.get(accessoryIds[index]) }))) },
+    nightMarketDetails.length ? { label: '야시장', embeds: makeItemEmbeds(nightMarketItems) } : null,
   ];
   // Match by skin uuid when known so a renamed translation doesn't break favorites; fall back to the stored name.
   const normalizedFavorites = favorites.map((favorite) => typeof favorite === 'string'
@@ -354,7 +355,10 @@ export async function autocomplete(interaction) {
 
 export async function execute(interaction) {
   await interaction.deferReply();
-  const requestedAccountName = interaction.options.getString('계정명')?.trim();
+  await showStore(interaction, interaction.options.getString('계정명')?.trim());
+}
+
+async function showStore(interaction, requestedAccountName) {
   const hasExplicitAccountName = Boolean(requestedAccountName);
   let accountName = requestedAccountName || '기본계정';
 
@@ -392,6 +396,9 @@ export async function execute(interaction) {
   try {
     const ssid = decryptCredential({ encrypted: cred.encrypted_ssid, iv: cred.iv, authTag: cred.auth_tag });
     const session = await restoreRiotStoreSession({ ssid, puuid: cred.puuid, shard: cred.shard });
+    // Build the store while the rotated cookie is saved and the display name resolved; awaited (and errors surfaced) below.
+    const storePagesPromise = createStorePages(session);
+    storePagesPromise.catch(() => {});
     await persistRotatedSsid(interaction.user.id, accountName, session);
     let riotName = cred.riot_name;
     let riotTag = cred.riot_tag;
@@ -427,7 +434,7 @@ export async function execute(interaction) {
       accountName,
       riotName,
       riotTag,
-      ...(await createStorePages(session)),
+      ...(await storePagesPromise),
       index: 0,
       expiresAt: Date.now() + STORE_VIEW_TIMEOUT_MS,
     };
@@ -451,10 +458,22 @@ export async function execute(interaction) {
 
 export async function handleComponent(interaction) {
   const [, viewId, direction] = interaction.customId.split(':');
+  if (viewId === 'refresh') {
+    // Views live in memory, so after a restart or expiry offer a one-click reload of the presser's own default store.
+    await interaction.deferReply();
+    await showStore(interaction, undefined);
+    return;
+  }
   const view = storeViews.get(viewId);
   if (!view || view.expiresAt <= Date.now()) {
     storeViews.delete(viewId);
-    await interaction.reply({ content: '상점 화면이 만료되었습니다. `/상점`을 다시 실행해주세요.', flags: MessageFlags.Ephemeral });
+    await interaction.reply({
+      content: '상점 화면이 만료되었습니다. 아래 버튼으로 기본 계정의 상점을 다시 조회할 수 있습니다.',
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('store-view:refresh').setLabel('상점 다시 조회').setStyle(ButtonStyle.Primary),
+      )],
+      flags: MessageFlags.Ephemeral,
+    });
     return;
   }
   if (view.userId !== interaction.user.id) {
